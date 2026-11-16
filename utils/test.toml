@@ -1,0 +1,77 @@
+config_version = 1
+
+# ========================================
+# Математическая модель
+# ========================================
+
+[problem]
+type = "wave_1d"
+
+[parameters]
+c = 1.0
+L = 10.0
+period = 5.0
+
+# ========================================
+# Расчетная область
+# ========================================
+
+[domain]
+x = [0.0, 10.0]
+t = [0.0, 20.0]
+
+# ========================================
+# Расчетная сетка
+# ========================================
+
+[grid]
+dx = 0.1
+dt = 0.05
+
+# ========================================
+# Численный метод
+# ========================================
+
+[solver]
+method = "explicit_central"
+check_stability = true
+check_compatibility = true
+
+# ========================================
+# Граничные условия
+# ========================================
+
+[boundaries.left]
+type = "dirichlet"
+source = "function"
+expression = "0.0"
+
+[boundaries.right]
+type = "neumann"
+source = "function"
+expression = "0.0"
+
+# ========================================
+# Начальные условия
+# ========================================
+
+[initials.position]
+source = "function"
+expression = "sin(pi * x / (2 * L))"
+
+[initials.velocity]
+source = "table"
+path = "data/velocity.csv"
+interpolation = "linear"
+x_column = "x"
+value_column = "velocity"
+
+# ========================================
+# Сохранение результатов
+# ========================================
+
+[output]
+directory = "results/"
+format = "csv"
+save_every = 10
+fields = ["position", "velocity"]

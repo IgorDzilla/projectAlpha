@@ -1,0 +1,58 @@
+#Локальные настройки ОС, редакторов и Python.
+.DS_Store
+._*
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Сборки CMake и их результаты, включая сборку прямо в исходниках.
+build/
+build-*/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+Testing/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.dSYM/
+/numerical-solver/Makefile
+/numerical-solver/solver-cli
+/numerical-solver/*-test
+/numerical-solver/check-euler-output
+
+# Выход расчётов и тестов. Входные TOML в configs остаются в Git.
+results/
+cli-test-results/
+config-test-results/
+
+# Исходный отдельный решатель уже адаптирован в numerical-solver.
+/riemannSolver/
+
+# Описания архитектуры, спецификации и планы. Инструкцию запуска оставляем.
+/numerical-solver/docs/*
+!/numerical-solver/docs/running.md
+/numerical-solver/benchmarks/README.md
+/numerical-solver/src/README.md
+/numerical-solver/apps/solver-cli/config/README.md
+
+# Примеры и документация отдельного волнового ридера.
+# Его код, зависимости, лицензии, tests и test.toml нужны текущему CMake/CTest.
+/utils/examples/
+/utils/README.md
+/utils/toml_config_spec.md
+
+# Заготовки модулей в include/numerics НЕ игнорируем.
+# Исходники, CMakeLists.txt, тесты, входные конфиги и лицензии также остаются.

@@ -1,0 +1,50 @@
+# Toro 3: Strong left pressure. Начальные состояния постоянны на полуосях.
+config_version = 2
+
+[problem]
+type = "euler_1d"
+
+[parameters]
+gamma = 1.4
+
+[domain]
+x = [0.0, 1.0]
+t = [0.0, 0.012]
+
+[grid]
+cells = 200
+
+[initials]
+type = "riemann"
+discontinuity = 0.5
+
+[initials.left]
+density = 1.0
+velocity = 0.0
+pressure = 1000.0
+
+[initials.right]
+density = 1.0
+velocity = 0.0
+pressure = 0.01
+
+[boundaries.left]
+type = "transmissive"
+
+[boundaries.right]
+type = "transmissive"
+
+[solver]
+method = "finite_volume"
+flux = "godunov_exact"
+integrator = "explicit_euler"
+cfl = 0.4
+
+[solver.exact]
+max_iterations = 100
+
+[output]
+directory = "results/toro_3"
+format = "csv"
+save_every = 10
+fields = ["density", "momentum", "energy", "velocity", "pressure"]
