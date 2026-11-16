@@ -29,7 +29,7 @@ int main(int argc,char** argv) {
     auto fixture=toml::parse_file((configs/"toro_1.toml").string());
     auto c=parseEulerConfig(fixture,configs);
     check(c.cells==200 && c.gamma==1.4 && c.tEnd==0.25,"config values");
-    check(c.exact.maxIterations==100 && c.exact.pressureRtol==1e-10,"exact defaults");
+    check(c.exact.maxIterations==100 && c.exact.pressureRtol==1e-6,"exact defaults");
     check(c.output->directory==std::filesystem::absolute(configs/"results/toro_1").lexically_normal(),"relative output base");
     check(c.output->fields.size()==5 && c.output->saveEvery==10,"output values");
     const auto bad=[&](auto mutate) {

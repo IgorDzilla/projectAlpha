@@ -115,6 +115,55 @@ class PlotToroTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             plot.discover_cases(self.root / "missing")
 
+    def exact_fixture(self):
+        meta = dict(test="1", passed="1", gamma="1.4", x_min="0", x_max="1", x0="0.5",
+                    t_start="0", tout="0.2", p_star="0.30313", u_star="0.92745",
+                    rho_star_left="0.42632", rho_star_right="0.26557", guess="two-shocks",
+                    initial_pressure="0.29", iterations="3", contact="0.92745",
+                    left_type="rarefaction", right_type="shock", left_head="-1.1832",
+                    left_tail="-0.0703", right_head="1.7522", right_tail="1.7522",
+                    left_rho="1", left_u="0", left_p="1", right_rho="0.125", right_u="0", right_p="0.1")
+        def write(name, header, rows):
+            with (self.case_dir / name).open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                writer.writerows(rows)
+        write("summary.csv", ["key", "value"], meta.items())
+        values = [(0, 1, 0, 1), (.5, .42632, .92745, .30313), (1, .125, 0, .1)]
+        profile = [[x, r, u, p, p/(.4*r), np.sqrt(1.4*p/r), p/r**1.4] for x, r, u, p in values]
+        write("profile.csv", ["x", "density", "velocity", "pressure", "internal_energy", "sound_speed", "entropy"], profile)
+        write("density_xt.csv", ["time", "cell", "x", "density"],
+              [[t, i, row[0], row[1]] for t in (0, .2) for i, row in enumerate(values)])
+        write("wave_curves.csv", ["p", "u_left", "u_right"], [[.1, 1.6, 0], [.30313, .92745, .92745], [1, 0, 2.3]])
+        write("errors.csv", plot.ERROR_COLUMNS,
+              [[k, meta[k], meta[k], 0, 0, 1e-5, 1] for k in plot.QUANTITIES])
+
+    def test_exact_profiles_curves_and_report(self):
+        self.exact_fixture()
+        case = plot.read_case(self.case_dir)
+        self.assertTrue(case.exact)
+        self.assertEqual(case.xt_rho.shape, (2, 3))
+        np.testing.assert_allclose(case.curves["u_left"][1], float(case.meta["u_star"]))
+        out = self.root / "exact-plots"
+        plot.render([case], out)
+        self.assertEqual(len(list((out / "toro_1").glob("*.pdf"))), 3)
+        self.assertTrue((out / "toro_report.pdf").is_file())
+        report = (out / "REPORT.md").read_text()
+        for text in ("GUESSP", "ρ*L", "ρ*R", "Голова", "Контакт"):
+            self.assertIn(text, report)
+
+    def test_failed_exact_case_is_not_reported_as_passed(self):
+        self.exact_fixture()
+        path = self.case_dir / "summary.csv"
+        path.write_text(path.read_text().replace("passed,1", "passed,0"))
+        with self.assertRaises(ValueError):
+            plot.read_case(self.case_dir)
+        self.exact_fixture()
+        path = self.case_dir / "profile.csv"
+        path.write_text(path.read_text().replace("0,1,0,1,", "0,-1,0,1,"))
+        with self.assertRaises(ValueError):
+            plot.read_case(self.case_dir)
+
 
 if __name__ == "__main__":
     unittest.main()

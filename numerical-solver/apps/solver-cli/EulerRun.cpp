@@ -19,7 +19,7 @@ EulerRunResult runEuler(const EulerConfig& c) {
   RiemannProblem1D problem(c.left,c.right,c.discontinuity,c.gamma);
   auto initial=problem.initialState(mesh,c.tStart);
   // Отказ по вакууму/несходимости исходного разрыва — до создания файлов.
-  ExactEulerRiemannSolver(c.gamma,c.exact).solve(c.left,c.right);
+  const auto riemann=ExactEulerRiemannSolver(c.gamma,c.exact).solve(c.left,c.right);
   ExplicitSolver<1> solver(std::move(initial),
       std::make_unique<FiniteVolume>(mesh,c.gamma,c.cfl,c.exact),
       std::make_unique<ExplicitEuler<1>>(),std::numeric_limits<double>::max());
@@ -43,6 +43,8 @@ EulerRunResult runEuler(const EulerConfig& c) {
              << "\npressure_rtol=" << c.exact.pressureRtol << "\nresidual_rtol=" << c.exact.residualRtol
              << "\nmax_iterations=" << c.exact.maxIterations
              << "\nmax_bracket_expansions=" << c.exact.maxBracketExpansions
+             << "\nriemann_iterations=" << riemann.iterations
+             << "\nriemann_pressure_change=" << riemann.relativePressureChange
              << "\nmax_steps=" << c.maxSteps << "\nsave_every=" << c.output->saveEvery
              << "\nrepresentation=conservative_cell_averages; velocity/pressure derived from U\n";
     metadata.flush();

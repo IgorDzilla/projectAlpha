@@ -1,234 +1,288 @@
 #include "config/EulerConfig.hpp"
-#include "numerics/methods/riemann/ExactEulerRiemannSolver.hpp"
-#include "numerics/core/State.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
-#include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
+namespace fs = std::filesystem;
+
+struct Reference {
+  const char* name;
+  std::array<double, 4> values;   // p*, u*, rho*L, rho*R
+  std::array<double, 4> rounding; // округление эталона и, для теста 5, входных данных
+  RiemannWaveType left;
+  RiemannWaveType right;
+};
+
+const std::array<Reference, 5> references{{
+    {"Sod", {0.30313, 0.92745, 0.42632, 0.26557},
+     {5e-6, 5e-6, 5e-6, 5e-6}, RiemannWaveType::Rarefaction, RiemannWaveType::Shock},
+    {"Two rarefactions", {0.00189, 0.0, 0.02185, 0.02185},
+     {5e-6, 1e-8, 5e-6, 5e-6}, RiemannWaveType::Rarefaction, RiemannWaveType::Rarefaction},
+    {"Strong left pressure", {460.894, 19.5975, 0.57506, 5.99924},
+     {5e-4, 5e-5, 5e-6, 5e-6}, RiemannWaveType::Rarefaction, RiemannWaveType::Shock},
+    {"Strong right pressure", {46.0950, -6.19633, 5.99242, 0.57511},
+     {5e-5, 5e-6, 5e-6, 5e-6}, RiemannWaveType::Shock, RiemannWaveType::Rarefaction},
+    {"Colliding shocks", {1691.64, 8.68975, 14.2823, 31.0426},
+     // uL=19.5975 округлено: точный расчёт этих данных даёт u*=8.6897744116.
+     // Вариация входов на половину их разряда даёт u* от 8.6897415 до 8.6898074.
+     {5e-3, 5e-5, 5e-5, 5e-5}, RiemannWaveType::Shock, RiemannWaveType::Shock},
+}};
+
+std::ofstream csv(const fs::path& path) {
+  std::ofstream file;
+  file.exceptions(std::ios::failbit | std::ios::badbit);
+  file.open(path);
+  file << std::setprecision(17);
+  return file;
+}
+
+double soundSpeed(const EulerPrimitiveState& w, double gamma) {
+  return EulerEquations(gamma).soundSpeed(w);
+}
+
 void check(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
 }
-void near(double a, double b, const char* message, double tolerance = 2.0e-9) {
-  check(std::isfinite(a) && std::isfinite(b) &&
-        std::abs(a-b) <= tolerance * std::max({1.0, std::abs(a), std::abs(b)}), message);
+
+void near(double actual, double expected, const char* message) {
+  check(std::isfinite(actual) && std::isfinite(expected) &&
+        std::abs(actual - expected) <= 2e-8 * std::max({1.0, std::abs(actual), std::abs(expected)}),
+        message);
 }
-void same(const EulerPrimitiveState& a, const EulerPrimitiveState& b) {
-  near(a.density,b.density,"density mismatch");
-  near(a.velocity,b.velocity,"velocity mismatch");
-  near(a.pressure,b.pressure,"pressure mismatch");
+
+void same(const EulerPrimitiveState& actual, const EulerPrimitiveState& expected) {
+  near(actual.density, expected.density, "sample density");
+  near(actual.velocity, expected.velocity, "sample velocity");
+  near(actual.pressure, expected.pressure, "sample pressure");
 }
-template<class Error, class F> void throws(F action) {
-  bool caught = false;
-  try { action(); } catch (const Error&) { caught = true; }
-  check(caught,"expected exception was not thrown");
-}
-void checkShock(const EulerEquations& gas, const EulerPrimitiveState& a,
-                const EulerPrimitiveState& b, double speed) {
-  const auto ua=gas.toConservative(a), ub=gas.toConservative(b);
-  const auto fa=gas.physicalFlux(a), fb=gas.physicalFlux(b);
-  near(fb.mass-fa.mass,speed*(ub.density-ua.density),"mass jump",2e-8);
-  near(fb.momentum-fa.momentum,speed*(ub.momentum-ua.momentum),"momentum jump",2e-8);
-  near(fb.energy-fa.energy,speed*(ub.energy-ua.energy),"energy jump",2e-8);
-}
-void checkGasAndState(const EulerConfig& config) {
-  for (double gamma : {1.4,5.0/3.0}) {
-    const EulerEquations gas(gamma);
-    const EulerPrimitiveState w{2.0,3.0,4.0};
-    const auto u=gas.toConservative(w);
-    near(u.density,2.0,"rho"); near(u.momentum,6.0,"momentum");
-    near(u.energy,4.0/(gamma-1.0)+9.0,"energy per volume");
-    same(gas.toPrimitive(u),w);
-    const auto f=gas.physicalFlux(w);
-    near(f.mass,6.0,"mass flux"); near(f.momentum,22.0,"momentum flux");
-    near(f.energy,3.0*(u.energy+4.0),"energy flux");
-    near(gas.soundSpeed(w),std::sqrt(gamma*2.0),"sound speed");
+
+void checkPhysics(const ExactEulerRiemannSolver& solver, const RiemannSolution& r) {
+  const EulerEquations gas(solver.gamma());
+  for (bool left : {true, false}) {
+    const auto& outer = left ? r.left : r.right;
+    const auto& star = left ? r.starLeft : r.starRight;
+    const auto& wave = left ? r.leftWave : r.rightWave;
+    const double sign = left ? -1.0 : 1.0;
+    same(solver.sample(r, wave.headSpeed + sign), outer);
+    same(solver.sample(r, (wave.tailSpeed + r.contactSpeed) / 2), star);
+    if (wave.type == RiemannWaveType::Shock) {
+      // Ранкин — Гюгонио: скачок потока равен скорости фронта на скачок U.
+      const auto a = gas.toConservative(outer), b = gas.toConservative(star);
+      const auto fa = gas.physicalFlux(outer), fb = gas.physicalFlux(star);
+      near(fb.mass - fa.mass, wave.headSpeed * (b.density - a.density), "shock mass balance");
+      near(fb.momentum - fa.momentum, wave.headSpeed * (b.momentum - a.momentum), "shock momentum balance");
+      near(fb.energy - fa.energy, wave.headSpeed * (b.energy - a.energy), "shock energy balance");
+      check(star.pressure / std::pow(star.density, gas.gamma()) >=
+            outer.pressure / std::pow(outer.density, gas.gamma()), "shock entropy decrease");
+    } else {
+      const double ray = (wave.headSpeed + wave.tailSpeed) / 2;
+      const auto fan = solver.sample(r, ray);
+      const double a = gas.soundSpeed(fan), aOuter = gas.soundSpeed(outer);
+      // Веер изэнтропичен; сохраняется инвариант, луч совпадает с характеристикой.
+      near(fan.pressure / std::pow(fan.density, gas.gamma()),
+           outer.pressure / std::pow(outer.density, gas.gamma()), "fan entropy");
+      near(fan.velocity - sign * 2 * a / (gas.gamma() - 1),
+           outer.velocity - sign * 2 * aOuter / (gas.gamma() - 1), "fan Riemann invariant");
+      near(fan.velocity + sign * a, ray, "fan characteristic");
+    }
   }
-  // Данные из общих ячеечных полей можно передать в решатель без другой сетки.
-  CartesianMesh<1> mesh({0.0},{0.5},{2});
-  State<1> state(mesh,{"density","momentum","energy"});
-  const EulerEquations gas(config.gamma);
-  const auto left=gas.toConservative(config.left);
-  const auto right=gas.toConservative(config.right);
-  state.component(0)[0]=left.density; state.component(1)[0]=left.momentum;
-  state.component(2)[0]=left.energy;
-  state.component(0)[1]=right.density; state.component(1)[1]=right.momentum;
-  state.component(2)[1]=right.energy;
-  const auto at=[&](std::size_t i) {
-    return gas.toPrimitive({state.component(0)[i],state.component(1)[i],state.component(2)[i]});
-  };
-  const ExactEulerRiemannSolver solver(gas.gamma());
-  const auto r=solver.solve(at(0),at(1));
-  same(solver.sample(r,r.leftWave.headSpeed-1.0),config.left);
-  same(solver.sample(r,r.rightWave.headSpeed+1.0),config.right);
-  near(state.component(0)[0],config.left.density,"local solver must not change fields");
-  check(state.time()==0.0,"local solver must not change time");
+  const auto l = solver.sample(r, (r.leftWave.tailSpeed + r.contactSpeed) / 2);
+  const auto right = solver.sample(r, (r.rightWave.tailSpeed + r.contactSpeed) / 2);
+  near(l.pressure, right.pressure, "contact pressure continuity");
+  near(l.velocity, right.velocity, "contact velocity continuity");
+  same(solver.sample(r, r.contactSpeed), r.starRight);
 }
-EulerPrimitiveState shifted(EulerPrimitiveState state, double velocity) {
-  state.velocity += velocity;
-  return state;
-}
-EulerPrimitiveState mirrored(EulerPrimitiveState state) {
-  state.velocity = -state.velocity;
-  return state;
-}
-void checkWaves(double gamma, const EulerConfig& config) {
+
+void checkContactAndVacuum(double gamma) {
   const EulerEquations gas(gamma);
   const ExactEulerRiemannSolver solver(gamma);
-  const auto left=config.left, right=config.right;
-  const auto r=solver.solve(left,right);
-  check(r.leftWave.type==RiemannWaveType::Rarefaction,"left fan");
-  check(r.rightWave.type==RiemannWaveType::Shock,"right shock");
-  check(r.exactPressureRoot || (r.relativeResidual<=1e-10 && r.relativeBracketWidth<=1e-10),
-        "both convergence criteria");
-  checkShock(gas,r.starRight,right,r.rightWave.headSpeed);
-  same(solver.sample(r,-100.0),left); same(solver.sample(r,100.0),right);
-  same(solver.sample(r,r.contactSpeed),r.starRight);
-  same(solver.sample(r,r.rightWave.headSpeed),right);
-  same(solver.sample(r,r.leftWave.headSpeed),left);
-  same(solver.sample(r,r.leftWave.tailSpeed),r.starLeft);
-  const double ray=0.5*(r.leftWave.headSpeed+r.leftWave.tailSpeed);
-  const auto fan=solver.sample(r,ray);
-  near(fan.pressure/std::pow(fan.density,gamma),left.pressure/std::pow(left.density,gamma),
-       "left fan entropy");
-  near(fan.velocity+2*gas.soundSpeed(fan)/(gamma-1),
-       left.velocity+2*gas.soundSpeed(left)/(gamma-1),"left fan invariant");
-  near(fan.velocity-gas.soundSpeed(fan),ray,"left fan characteristic");
-  // Зеркальная задача покрывает левый удар и правый веер.
-  const auto reflectedSolution=solver.solve(mirrored(right),mirrored(left));
-  near(reflectedSolution.pStar,r.pStar,"mirror pressure");
-  near(reflectedSolution.uStar,-r.uStar,"mirror velocity");
-  checkShock(gas,mirrored(right),reflectedSolution.starLeft,reflectedSolution.leftWave.headSpeed);
-  same(solver.sample(reflectedSolution,reflectedSolution.leftWave.headSpeed),reflectedSolution.starLeft);
-  const auto reflected=solver.sample(reflectedSolution,-ray);
-  same(reflected,{fan.density,-fan.velocity,fan.pressure});
-  same(solver.sample(reflectedSolution,reflectedSolution.rightWave.tailSpeed),reflectedSolution.starRight);
-  same(solver.sample(reflectedSolution,reflectedSolution.rightWave.headSpeed),mirrored(left));
-  // Сдвиг всех скоростей помещает неподвижную грань внутрь левого веера.
-  const double shift=-ray;
-  const auto transonic=solver.solve(shifted(left,shift),shifted(right,shift));
-  const auto face=solver.sample(transonic,0);
-  same(face,{fan.density,fan.velocity+shift,fan.pressure});
-  near(face.velocity,gas.soundSpeed(face),"sonic face inside fan");
-  const auto negative=solver.solve(mirrored(shifted(right,shift)),mirrored(shifted(left,shift)));
-  same(solver.sample(negative,0),{face.density,-face.velocity,face.pressure});
-  for (double speed : {r.leftWave.headSpeed,r.leftWave.tailSpeed,
-                       r.rightWave.headSpeed,r.contactSpeed,
-                       gas.soundSpeed(left),gas.soundSpeed(right)}) {
-    check(r.signalSpeed>=std::abs(speed),"missing signal speed");
+  for (double u : {-2.0, 0.0, 2.0}) {
+    const EulerPrimitiveState left{1, u, 2}, right{3, u, 2};
+    const auto contact = solver.solve(left, right);
+    same(solver.sample(contact, u - .1), left);
+    same(solver.sample(contact, u + .1), right);
+    const auto uniform = solver.solve(left, left);
+    for (double ray : {u - 10, u, u + 10}) same(solver.sample(uniform, ray), left);
   }
-  for (double velocity : {-100.0,100.0}) {
-    const auto advected=solver.solve(shifted(left,velocity),shifted(right,velocity));
-    same(solver.sample(advected,0),velocity>0 ? shifted(left,velocity) : shifted(right,velocity));
+  const auto contact = solver.solve({1, 0, 2}, {3, 0, 2});
+  const auto flux = gas.physicalFlux(solver.sample(contact, 0));
+  near(flux.mass, 0, "stationary contact mass flux");
+  near(flux.momentum, 2, "stationary contact momentum flux");
+  near(flux.energy, 0, "stationary contact energy flux");
+  const double critical = 2 * gas.soundSpeed({1, 0, 1}) / (gamma - 1);
+  const auto expansion = solver.solve({1, -.99 * critical, 1}, {1, .99 * critical, 1});
+  const double expected = std::pow(1 - .99, 2 * gamma / (gamma - 1));
+  near(expansion.pStar / expected, 1, "near-vacuum analytic pressure");
+  check(expansion.starLeft.density > 0 && expansion.starRight.density > 0,
+        "near-vacuum density must stay positive");
+  for (double u : {critical, 1.01 * critical}) {
+    bool vacuum = false;
+    try { solver.solve({1, -u, 1}, {1, u, 1}); }
+    catch (const std::domain_error&) { vacuum = true; }
+    check(vacuum, "vacuum must be detected at and above the expansion limit");
   }
 }
-void checkContactsAndExtremes(const EulerConfig& config, const EulerConfig& strongConfig) {
-  const ExactEulerRiemannSolver solver;
-  const EulerEquations gas;
-  for (double velocity : {-2.0,0.0,2.0}) {
-    const EulerPrimitiveState l{1,velocity,1}, r{3,velocity,1};
-    const auto contact=solver.solve(l,r);
-    check(contact.iterations==0,"contact should need no iterations");
-    same(solver.sample(contact,velocity-0.1),l);
-    same(solver.sample(contact,velocity),r);
-    same(solver.sample(contact,velocity+0.1),r);
-    const auto uniform=solver.solve(l,l);
-    for (double ray : {-100.0,velocity,100.0}) same(solver.sample(uniform,ray),l);
-    check(uniform.signalSpeed>=std::abs(velocity)+gas.soundSpeed(l),"zero wave CFL");
-  }
-  const auto stationary=solver.solve({1,0,2},{3,0,2});
-  const auto flux=gas.physicalFlux(solver.sample(stationary,0));
-  near(flux.mass,0,"stationary contact mass"); near(flux.momentum,2,"stationary contact momentum");
-  near(flux.energy,0,"stationary contact energy");
-  const auto collision=solver.solve({1,2,1},{1,-2,1});
-  check(collision.leftWave.type==RiemannWaveType::Shock &&
-        collision.rightWave.type==RiemannWaveType::Shock,"two shocks");
-  near(collision.uStar,0,"symmetric collision");
-  checkShock(gas,collision.left,collision.starLeft,collision.leftWave.headSpeed);
-  checkShock(gas,collision.starRight,collision.right,collision.rightWave.headSpeed);
-  const double a=gas.soundSpeed({1,0,1});
-  const double velocity=0.99*2*a/(gas.gamma()-1);
-  const auto expansion=solver.solve({1,-velocity,1},{1,velocity,1});
-  const double expected=std::pow(1-(gas.gamma()-1)*velocity/(2*a),2*gas.gamma()/(gas.gamma()-1));
-  check(expansion.pStar>0,"near vacuum pressure positive");
-  check(std::abs(expansion.pStar/expected-1)<2e-8,"analytic two-rarefaction pressure");
-  // Изменение единиц плотности и давления не должно менять скорости волн.
-  const ExactEulerRiemannSolver scaledSolver(config.gamma);
-  const auto reference=scaledSolver.solve(config.left,config.right);
-  for (double scale : {1e-100,1e100}) {
-    auto left=config.left, right=config.right;
-    left.density*=scale; left.pressure*=scale;
-    right.density*=scale; right.pressure*=scale;
-    const auto scaled=scaledSolver.solve(left,right);
-    near(scaled.pStar/scale,reference.pStar,"scaled pressure");
-    near(scaled.starLeft.density/scale,reference.starLeft.density,"scaled density");
-    near(scaled.uStar,reference.uStar,"scaled velocity");
-    near(scaled.signalSpeed,reference.signalSpeed,"scaled signal speed");
-  }
-  const auto strong=ExactEulerRiemannSolver(strongConfig.gamma).solve(strongConfig.left,strongConfig.right);
-  check(strong.signalSpeed>=std::abs(strong.rightWave.headSpeed),"strong shock speed missing");
-  // Стационарный нормальный удар: upstream Mach=2, gamma=1.4.
-  const double u=2*std::sqrt(1.4), rhoRatio=8.0/3.0;
-  const EulerPrimitiveState upstream{1,u,1}, downstream{rhoRatio,u/rhoRatio,4.5};
-  const auto shock=solver.solve(upstream,downstream);
-  const auto f1=gas.physicalFlux(upstream), f2=gas.physicalFlux(downstream);
-  near(f1.mass,f2.mass,"stationary shock mass");
-  near(f1.momentum,f2.momentum,"stationary shock momentum");
-  near(f1.energy,f2.energy,"stationary shock energy");
-  const auto sampled=gas.physicalFlux(solver.sample(shock,0));
-  near(sampled.energy,f1.energy,"stationary shock sample flux");
+
+double coordinate(double first, double last, std::size_t i, std::size_t count) {
+  return first + (last - first) * static_cast<double>(i) / static_cast<double>(count - 1);
 }
-void checkFailures(const EulerConfig& config) {
-  const double nan=std::numeric_limits<double>::quiet_NaN();
-  const double inf=std::numeric_limits<double>::infinity();
-  const ExactEulerRiemannSolver solver;
-  const EulerEquations gas;
-  const EulerPrimitiveState w{1,0,1};
-  for (double gamma : {0.0,1.0,nan,inf}) throws<std::invalid_argument>([&]{ExactEulerRiemannSolver bad(gamma);});
-  for (auto bad : {EulerPrimitiveState{0,0,1},{-1,0,1},{1,0,0},{1,nan,1},{1,0,inf}}) {
-    throws<std::invalid_argument>([&]{solver.solve(bad,w);});
-    throws<std::invalid_argument>([&]{solver.solve(w,bad);});
-  }
-  throws<std::invalid_argument>([&]{gas.toPrimitive({1,4,1});});
-  throws<std::runtime_error>([&]{gas.physicalFlux({1,1e200,1});});
-  for (double velocity : {2*gas.soundSpeed(w)/(gas.gamma()-1),10.0}) {
-    throws<std::domain_error>([&]{solver.solve({1,-velocity,1},{1,velocity,1});});
-  }
-  auto r=solver.solve(config.left,config.right);
-  throws<std::invalid_argument>([&]{solver.sample(r,nan);});
-  throws<std::invalid_argument>([&]{solver.sample(r,inf);});
-  throws<std::invalid_argument>([&]{ExactEulerRiemannSolver(5.0/3.0).sample(r,0);});
-  throws<std::invalid_argument>([&]{solver.sample(RiemannSolution{},0);});
-  r.gamma=nan;
-  throws<std::invalid_argument>([&]{solver.sample(r,0);});
-  ExactRiemannOptions options;
-  options.maxIterations=1;
-  throws<std::runtime_error>([&]{ExactEulerRiemannSolver(1.4,options).solve(config.left,config.right);});
-  options={}; options.maxBracketExpansions=1;
-  throws<std::runtime_error>([&]{ExactEulerRiemannSolver(1.4,options).solve({1,100,1},{1,-100,1});});
-  options={}; options.pressureRtol=nan;
-  throws<std::invalid_argument>([&]{ExactEulerRiemannSolver bad(1.4,options);});
-  options={}; options.residualRtol=0;
-  throws<std::invalid_argument>([&]{ExactEulerRiemannSolver bad(1.4,options);});
-  options={}; options.maxIterations=0;
-  throws<std::invalid_argument>([&]{ExactEulerRiemannSolver bad(1.4,options);});
-  options={}; options.maxBracketExpansions=0;
-  throws<std::invalid_argument>([&]{ExactEulerRiemannSolver bad(1.4,options);});
+
+// Только формула для диаграммы p-u из §15.6; Ньютон здесь не дублируется.
+double waveCurve(double p, const EulerPrimitiveState& w, double gamma) {
+  if (p > w.pressure)
+    return (p - w.pressure) * std::sqrt(2.0 / ((gamma + 1) * w.density) /
+                                      (p + (gamma - 1) / (gamma + 1) * w.pressure));
+  return 2 * soundSpeed(w, gamma) / (gamma - 1) *
+         (std::pow(p / w.pressure, (gamma - 1) / (2 * gamma)) - 1);
 }
+
+void exportPlots(const fs::path& directory, const EulerConfig& c,
+                 const ExactEulerRiemannSolver& solver, const RiemannSolution& r) {
+  auto profile = csv(directory / "profile.csv");
+  profile << "x,density,velocity,pressure,internal_energy,sound_speed,entropy\n";
+  for (std::size_t i = 0; i < 2001; ++i) {
+    const double x = coordinate(c.xMin, c.xMax, i, 2001);
+    const auto w = solver.sample(r, (x - c.discontinuity) / (c.tEnd - c.tStart));
+    profile << x << ',' << w.density << ',' << w.velocity << ',' << w.pressure << ','
+            << w.pressure / ((c.gamma - 1) * w.density) << ','
+            << soundSpeed(w, c.gamma) << ',' << w.pressure / std::pow(w.density, c.gamma) << '\n';
+  }
+  auto xt = csv(directory / "density_xt.csv");
+  xt << "time,cell,x,density\n";
+  for (std::size_t j = 0; j < 121; ++j) {
+    const double t = coordinate(0, (c.tEnd - c.tStart), j, 121);
+    for (std::size_t i = 0; i < 301; ++i) {
+      const double x = coordinate(c.xMin, c.xMax, i, 301);
+      // При t=0 берём начальные данные, в точке разрыва — правое состояние.
+      const auto w = j == 0 ? (x < c.discontinuity ? r.left : r.right)
+                            : solver.sample(r, (x - c.discontinuity) / t);
+      xt << c.tStart + t << ',' << i << ',' << x << ',' << w.density << '\n';
+    }
+  }
+  const double pMin = 0.02 * std::min({r.left.pressure, r.right.pressure, r.pStar});
+  const double pMax = 2.0 * std::max({r.left.pressure, r.right.pressure, r.pStar});
+  std::vector<double> pressures{r.left.pressure, r.right.pressure, r.pStar};
+  for (std::size_t i = 0; i < 801; ++i)
+    pressures.push_back(std::exp(coordinate(std::log(pMin), std::log(pMax), i, 801)));
+  std::sort(pressures.begin(), pressures.end());
+  pressures.erase(std::unique(pressures.begin(), pressures.end()), pressures.end());
+  auto curves = csv(directory / "wave_curves.csv");
+  curves << "p,u_left,u_right\n";
+  for (double p : pressures)
+    curves << p << ',' << r.left.velocity - waveCurve(p, r.left, c.gamma) << ','
+           << r.right.velocity + waveCurve(p, r.right, c.gamma) << '\n';
 }
+
+bool compare(const fs::path& directory, const Reference& reference,
+             const RiemannSolution& r) {
+  const std::array<double, 4> actual{r.pStar, r.uStar, r.starLeft.density, r.starRight.density};
+  const std::array<const char*, 4> names{"p_star", "u_star", "rho_star_left", "rho_star_right"};
+  auto errors = csv(directory / "errors.csv");
+  errors << "quantity,actual,reference,absolute_error,relative_error,tolerance,passed\n";
+  bool passed = true;
+  for (std::size_t i = 0; i < actual.size(); ++i) {
+    const double error = std::abs(actual[i] - reference.values[i]);
+    const double tolerance = reference.rounding[i] + 2e-6 * std::abs(reference.values[i]);
+    const bool ok = std::isfinite(actual[i]) && error <= tolerance;
+    passed &= ok;
+    errors << names[i] << ',' << actual[i] << ',' << reference.values[i] << ',' << error << ',';
+    if (reference.values[i] != 0) errors << error / std::abs(reference.values[i]);
+    errors << ',' << tolerance << ',' << ok << '\n';
+    if (!ok)
+      std::cerr << "  " << names[i] << ": expected " << reference.values[i]
+                << ", got " << actual[i] << '\n';
+  }
+  passed &= r.leftWave.type == reference.left && r.rightWave.type == reference.right;
+  return passed;
+}
+
+void exportSummary(const fs::path& directory, std::size_t id, const Reference& reference,
+                   const EulerConfig& c, const RiemannSolution& r, bool passed) {
+  auto out = csv(directory / "summary.csv");
+  out << "key,value\n";
+  out << "test," << id << "\nname," << reference.name << "\npassed," << passed
+      << "\ngamma," << c.gamma << "\nx_min," << c.xMin << "\nx_max," << c.xMax
+      << "\nx0," << c.discontinuity << "\nt_start," << c.tStart << "\ntout," << c.tEnd
+      << "\np_star," << r.pStar << "\nu_star," << r.uStar
+      << "\nrho_star_left," << r.starLeft.density << "\nrho_star_right," << r.starRight.density
+      << "\nguess," << toString(r.guessType)
+      << "\ninitial_pressure," << r.initialPressure << "\niterations," << r.iterations
+      << "\npressure_change," << r.relativePressureChange
+      << "\nleft_type," << toString(r.leftWave.type)
+      << "\nleft_head," << r.leftWave.headSpeed << "\nleft_tail," << r.leftWave.tailSpeed
+      << "\ncontact," << r.contactSpeed
+      << "\nright_type," << toString(r.rightWave.type)
+      << "\nright_head," << r.rightWave.headSpeed << "\nright_tail," << r.rightWave.tailSpeed;
+  for (bool left : {true, false}) {
+    const auto& w = left ? r.left : r.right;
+    const std::string side = left ? "left" : "right";
+    out << '\n' << side << "_rho," << w.density << '\n' << side << "_u," << w.velocity
+        << '\n' << side << "_p," << w.pressure;
+  }
+  out << '\n';
+}
+} // namespace
+
 int main(int argc, char** argv) {
-  try {
-    check(argc==3,"expected Sod and strong-shock TOML paths");
-    const auto config=readEulerConfig(argv[1]);
-    const auto strong=readEulerConfig(argv[2]);
-    checkGasAndState(config); checkWaves(config.gamma,config); checkWaves(5.0/3.0,config);
-    checkContactsAndExtremes(config,strong); checkFailures(config);
-    std::cout<<"Riemann solver and Euler model checks passed\n";
-  } catch (const std::exception& error) {
-    std::cerr<<error.what()<<'\n'; return 1;
+  if (argc > 3) {
+    std::cerr << "Usage: riemann-test [config-directory] [output-directory]\n";
+    return 1;
   }
+  const fs::path configs = argc > 1 ? argv[1] : TORO_CONFIG_DIR;
+  const fs::path output = argc > 2 ? argv[2] : TORO_OUTPUT_DIR;
+  bool allPassed = true;
+  std::cout << std::setprecision(8);
+  for (std::size_t i = 0; i < references.size(); ++i) {
+    const auto id = std::to_string(i + 1);
+    const auto directory = output / ("toro_" + id);
+    std::cout << "\nToro " << id << ": " << references[i].name << '\n';
+    try {
+      fs::create_directories(directory);
+      fs::remove(directory / "summary.csv"); // Не оставляем старый PASS после неудачного запуска.
+      const auto path = configs / ("toro_" + id + ".toml");
+      const auto config = readEulerConfig(path);
+      if (config.tEnd <= config.tStart)
+        throw std::runtime_error("Toro profiles require a positive duration");
+      const ExactEulerRiemannSolver solver(config.gamma, config.exact);
+      const auto solution = solver.solve(config.left, config.right);
+      if (solution.relativePressureChange >= config.exact.pressureRtol)
+        throw std::runtime_error("pressure change exceeds the requested tolerance");
+      const bool passed = compare(directory, references[i], solution);
+      checkPhysics(solver, solution);
+      EulerEquations(config.gamma).physicalFlux(solver.sample(solution, 0.0));
+      if (i == 0) {
+        checkContactAndVacuum(config.gamma);
+        checkContactAndVacuum(5.0 / 3.0);
+        auto coarse = config.exact, fine = config.exact;
+        coarse.pressureRtol = 1e-3; fine.pressureRtol = 1e-10;
+        const auto early = ExactEulerRiemannSolver(config.gamma, coarse).solve(config.left, config.right);
+        const auto precise = ExactEulerRiemannSolver(config.gamma, fine).solve(config.left, config.right);
+        if (early.relativePressureChange >= coarse.pressureRtol ||
+            precise.relativePressureChange >= fine.pressureRtol || early.iterations >= precise.iterations)
+          throw std::runtime_error("pressure tolerance does not control convergence");
+      }
+      exportPlots(directory, config, solver, solution);
+      fs::copy_file(path, directory / "config.toml", fs::copy_options::overwrite_existing);
+      exportSummary(directory, i + 1, references[i], config, solution, passed);
+      std::cout << (passed ? "[PASS]" : "[FAIL]") << " Toro " << id
+                << ", GUESSP: " << toString(solution.guessType)
+                << ", Iterations: " << solution.iterations << '\n';
+      allPassed &= passed;
+    } catch (const std::exception& error) {
+      std::cerr << "[FAIL] Toro " << id << ": " << error.what() << '\n';
+      allPassed = false;
+    }
+  }
+  std::cout << '\n' << (allPassed ? "All five Toro tests passed.\n" : "At least one Toro test failed.\n")
+            << "Output: " << fs::absolute(output).string() << '\n';
+  return allPassed ? 0 : 1;
 }

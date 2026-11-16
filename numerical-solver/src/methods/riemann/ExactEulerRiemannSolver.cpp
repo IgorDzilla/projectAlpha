@@ -303,24 +303,33 @@ RiemannSolution ExactEulerRiemannSolver::solve(
       if (residual < 0.0) low = pressure;
       else high = pressure;
       result.relativeBracketWidth = (high - low) / high;
-      if (result.relativeBracketWidth <= options_.pressureRtol &&
-          result.relativeResidual <= options_.residualRtol) {
+      const double derivative = evaluateWaveFunction(pressure, left, gamma).derivative +
+                                evaluateWaveFunction(pressure, right, gamma).derivative;
+      if (!std::isfinite(derivative) || derivative <= 0.0) {
+        throw std::runtime_error("invalid Riemann pressure derivative");
+      }
+      double next = pressure - residual / derivative;
+      const bool smallNewtonStep = std::isfinite(next) && next > 0.0 &&
+          2.0 * std::abs(next - pressure) / (next + pressure) < options_.pressureRtol;
+      // Защита Ньютона: сохраняем положительность и ограничивающий интервал.
+      // Сошедшийся шаг может совпасть с концом интервала из-за округления.
+      if (!smallNewtonStep && (!std::isfinite(next) || next <= low || next >= high)) {
+        next = low + 0.5 * (high - low);
+      }
+      if (!(next > 0.0) || !std::isfinite(next)) {
+        throw std::runtime_error("invalid Riemann pressure step");
+      }
+      if (next == pressure && result.relativeResidual > options_.residualRtol) {
+        throw std::runtime_error("Riemann pressure search stalled with nonzero residual");
+      }
+      result.relativePressureChange = 2.0 * std::abs(next - pressure) / (next + pressure);
+      pressure = next;
+      if (result.relativePressureChange < options_.pressureRtol) {
+        result.relativeResidual = std::abs(residualAt(pressure)) / velocityScale;
+        result.exactPressureRoot = result.relativeResidual == 0.0;
         converged = true;
         break;
       }
-      const double derivative = evaluateWaveFunction(pressure, left, gamma).derivative +
-                                evaluateWaveFunction(pressure, right, gamma).derivative;
-      double next = pressure - residual / derivative;
-      // Ньютон принимается внутри центральных 80% интервала, иначе — середина.
-      const double margin = 0.1 * (high - low);
-      if (!std::isfinite(derivative) || derivative <= 0.0 || !std::isfinite(next) ||
-          next <= low + margin || next >= high - margin) {
-        next = low + 0.5 * (high - low);
-      }
-      if (!(next > low && next < high) || next == pressure) {
-        throw std::runtime_error("Riemann pressure search stalled at floating-point precision");
-      }
-      pressure = next;
     }
     if (!converged) {
       throw std::runtime_error("Riemann pressure did not converge within maxIterations");

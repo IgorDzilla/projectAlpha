@@ -49,13 +49,14 @@ struct RiemannSolution {
   std::size_t bracketExpansions = 0;
   double relativeResidual = 0.0; // Невязка уравнения давления / масштаб скорости.
   double relativeBracketWidth = 0.0;
+  double relativePressureChange = 0.0;
   bool exactPressureRoot = false; // Невязка точно нулевая в арифметике double.
   double signalSpeed = 0.0; // Максимальный модуль скорости для будущего CFL.
 };
 
 struct ExactRiemannOptions {
-  double pressureRtol = 1.0e-10; // Относительная ширина интервала давления.
-  double residualRtol = 1.0e-10; // Допустимая нормированная невязка.
+  double pressureRtol = 1.0e-6; // 2*|pNew-pOld|/(pNew+pOld), как в §15.7.
+  double residualRtol = 1.0e-10; // Проверка невязки при остановке из-за округления.
   std::size_t maxIterations = 256;
   std::size_t maxBracketExpansions = 128;
 };

@@ -62,9 +62,21 @@ if(BUILD_TESTING)
 
   add_executable(riemann-test tests/riemann-test.cpp)
   target_link_libraries(riemann-test PRIVATE euler-app)
-  add_test(NAME riemann COMMAND riemann-test
-    "${CMAKE_CURRENT_SOURCE_DIR}/../configs/toro_1.toml"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../configs/toro_3.toml")
+  target_compile_definitions(riemann-test PRIVATE
+    TORO_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../configs"
+    TORO_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/toro-results")
+  add_test(NAME riemann COMMAND riemann-test)
+
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND)
+    add_custom_target(toro-plots
+      COMMAND $<TARGET_FILE:riemann-test>
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../plot_toro.py"
+              "${CMAKE_CURRENT_BINARY_DIR}/toro-results"
+      DEPENDS riemann-test
+      COMMENT "Five exact Toro tests, figures and report"
+      VERBATIM)
+  endif()
 
   add_executable(config-reader-test "${TOML_INCLUDE_DIR}/tests/toml-processor-test.cpp")
   target_link_libraries(config-reader-test PRIVATE config-reader)
