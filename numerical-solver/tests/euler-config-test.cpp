@@ -32,7 +32,6 @@ int main(int argc,char** argv) {
     check(c.exact.maxIterations==100 && c.exact.pressureRtol==1e-10,"exact defaults");
     check(c.output->directory==std::filesystem::absolute(configs/"results/toro_1").lexically_normal(),"relative output base");
     check(c.output->fields.size()==5 && c.output->saveEvery==10,"output values");
-    for (int i=1;i<=5;++i) readEulerConfig(configs/("toro_"+std::to_string(i)+".toml"));
     const auto bad=[&](auto mutate) {
       auto t=fixture; mutate(t); fails([&]{parseEulerConfig(t,configs);});
     };

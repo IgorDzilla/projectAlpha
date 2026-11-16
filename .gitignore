@@ -38,21 +38,5 @@ results/
 cli-test-results/
 config-test-results/
 
-# Исходный отдельный решатель уже адаптирован в numerical-solver.
-/riemannSolver/
-
-# Описания архитектуры, спецификации и планы. Инструкцию запуска оставляем.
-/numerical-solver/docs/*
-!/numerical-solver/docs/running.md
-/numerical-solver/benchmarks/README.md
-/numerical-solver/src/README.md
-/numerical-solver/apps/solver-cli/config/README.md
-
-# Примеры и документация отдельного волнового ридера.
-# Его код, зависимости, лицензии, tests и test.toml нужны текущему CMake/CTest.
-/utils/examples/
-/utils/README.md
-/utils/toml_config_spec.md
-
 # Заготовки модулей в include/numerics НЕ игнорируем.
 # Исходники, CMakeLists.txt, тесты, входные конфиги и лицензии также остаются.

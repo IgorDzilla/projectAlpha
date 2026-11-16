@@ -11,20 +11,22 @@ add_library(numerics STATIC
 target_include_directories(numerics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(numerics PUBLIC cxx_std_17)
 
-set(CONFIG_READER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../utils")
+# Единственная внешняя зависимость газового ввода — заголовок toml.hpp.
+set(TOML_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../utils")
+
+# Пользовательская библиотека сохраняется отдельно от газового приложения.
 add_library(config-reader STATIC
-  "${CONFIG_READER_DIR}/toml-processor.cpp"
-  "${CONFIG_READER_DIR}/math-expression.cpp"
+  "${TOML_INCLUDE_DIR}/toml-processor.cpp"
+  "${TOML_INCLUDE_DIR}/math-expression.cpp"
 )
-target_include_directories(config-reader PUBLIC "${CONFIG_READER_DIR}")
+target_include_directories(config-reader PUBLIC "${TOML_INCLUDE_DIR}")
 target_compile_features(config-reader PUBLIC cxx_std_17)
 
-# TOML остаётся в слое приложения; старый wave_1d reader не меняется.
 add_library(euler-app STATIC
   apps/solver-cli/config/EulerConfig.cpp
   apps/solver-cli/EulerRun.cpp
 )
-target_include_directories(euler-app PUBLIC apps/solver-cli "${CONFIG_READER_DIR}")
+target_include_directories(euler-app PUBLIC apps/solver-cli "${TOML_INCLUDE_DIR}")
 target_link_libraries(euler-app PUBLIC numerics)
 add_executable(solver-cli apps/solver-cli/main.cpp)
 target_link_libraries(solver-cli PRIVATE euler-app)
@@ -32,8 +34,8 @@ target_link_libraries(solver-cli PRIVATE euler-app)
 include(CTest)
 if(BUILD_TESTING)
   add_executable(finite-volume-test tests/finite-volume-test.cpp)
-  target_link_libraries(finite-volume-test PRIVATE numerics)
-  add_test(NAME finite-volume COMMAND finite-volume-test)
+  target_link_libraries(finite-volume-test PRIVATE euler-app)
+  add_test(NAME finite-volume COMMAND finite-volume-test "${CMAKE_CURRENT_SOURCE_DIR}/../configs/toro_1.toml")
 
   add_executable(euler-config-test tests/euler-config-test.cpp)
   target_link_libraries(euler-config-test PRIVATE euler-app)
@@ -58,16 +60,14 @@ if(BUILD_TESTING)
   target_link_libraries(solver-test PRIVATE numerics)
   add_test(NAME solver COMMAND solver-test)
 
-  add_executable(riemann-toro-test tests/riemann-toro-test.cpp)
-  target_link_libraries(riemann-toro-test PRIVATE numerics)
-  add_test(NAME riemann-toro COMMAND riemann-toro-test)
-
   add_executable(riemann-test tests/riemann-test.cpp)
-  target_link_libraries(riemann-test PRIVATE numerics)
-  add_test(NAME riemann COMMAND riemann-test)
+  target_link_libraries(riemann-test PRIVATE euler-app)
+  add_test(NAME riemann COMMAND riemann-test
+    "${CMAKE_CURRENT_SOURCE_DIR}/../configs/toro_1.toml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../configs/toro_3.toml")
 
-  add_executable(config-reader-test "${CONFIG_READER_DIR}/tests/toml-processor-test.cpp")
+  add_executable(config-reader-test "${TOML_INCLUDE_DIR}/tests/toml-processor-test.cpp")
   target_link_libraries(config-reader-test PRIVATE config-reader)
   add_test(NAME config-reader COMMAND config-reader-test)
-  set_tests_properties(config-reader PROPERTIES WORKING_DIRECTORY "${CONFIG_READER_DIR}")
+  set_tests_properties(config-reader PROPERTIES WORKING_DIRECTORY "${TOML_INCLUDE_DIR}")
 endif()

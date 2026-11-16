@@ -1,110 +1,63 @@
-# Numerical Solver
+# Решатель Римана
 
-Каркас библиотеки численных методов и консольного приложения для решения волновой задачи, переноса, теплопроводности и газовой динамики, включая одномерный распад разрыва (задачу Римана).
+Программа считает, что произойдёт с газом, если слева и справа от одной точки задать разные плотность, скорость и давление.
 
-**Работает полный последовательный расчёт газа в 1D:** TOML v2 → начальные средние → Годунов и конечные объёмы → явный Эйлер → CSV. Есть CLI; пять конфигов Торо проходят полный запуск. [Инструкция запуска](docs/running.md). Остальные физические профили пока не реализованы, старый ридер волнового TOML v1 сохранён. CTest запускает 12 проверок.
+Ты задаёшь числа в TOML-файле. Программа считает движение газа и записывает результат в CSV. Отдельный Python-скрипт строит графики.
 
-**Параллелизация отложена до явной отмашки пользователя.** Каталог `parallel/` резервирует место для будущих интерфейсов. При первой реализации допускается только последовательное выполнение; подключения OpenMP, MPI, потоков и GPU пока не планируются.
-
-В соседнем [utils](../utils/README.md) уже есть пользовательский конфиг-ридер для `wave_1d`. Его место в системе и ограничения описаны в [документе интеграции](docs/configuration.md). Код волнового ридера сохранён на месте. Для газового TOML v2 добавлен отдельный EulerConfig в слое приложения, использующий тот же toml.hpp.
+Сейчас работает одномерная задача с идеальным газом. Метод — Годунов первого порядка. Расчёт идёт последовательно.
 
 ## Быстрый запуск
 
-Из каталога `numerical-solver`:
+Все команды ниже выполняются из **project Alpha**:
 
 ```sh
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+cd "/Users/kozelskijigor/Documents/diffSchemes/project Alpha"
+cmake -S numerical-solver -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --target solver-cli
-./build/solver-cli ../configs/toro_1.toml --output-dir /tmp/sod-new-run
+./build/solver-cli configs/toro_1.toml --output-dir results/sod-1
+python3 plot_toro.py results/sod-1
 ```
 
-Каталог вывода должен быть новым или пустым. Результат: `solution.csv` и `run.txt`.
+Что получится:
 
-## Документация
+- `results/sod-1/solution.csv` — значения по ячейкам в разные моменты времени.
+- `results/sod-1/run.txt` — параметры расчёта и отметка об успешном завершении.
+- `results/sod-1/plots/` — картинки, общий PDF и короткий отчёт.
 
-- [Запуск и выходные файлы](docs/running.md).
-- [Как соединены все цепочки расчёта](docs/solver-chain.md).
-- [Архитектура и ответственность модулей](docs/architecture.md).
-- [Одномерный распад разрыва: постановка, метод и конфигурация](docs/riemann-1d.md).
-- [Как вызвать адаптированный решатель Римана](docs/riemann-api.md).
-- [Точный решатель Римана и поток Годунова — контракт](docs/exact-riemann-solver.md).
-- [Интеграция конфиг-ридера](docs/configuration.md).
-- [Этапы реализации и открытые решения](docs/roadmap.md).
-- [План проверки численных результатов](tests/README.md).
-- [План измерения производительности](benchmarks/README.md).
-- [Размещение будущих реализаций](src/README.md).
+Если папка `sod-1` уже заполнена, укажи другое имя, например `sod-2`. Решатель не затирает старые результаты.
 
-## Структура
+[Подробно: запуск, настройки и частые ошибки](docs/running.md).
 
-```text
-numerical-solver/
-├── CMakeLists.txt
-├── apps/solver-cli/
-│   ├── main.cpp
-│   ├── EulerRun.hpp, EulerRun.cpp
-│   └── config/EulerConfig.hpp, EulerConfig.cpp
-├── include/numerics/
-│   ├── core/                  # Mesh, Field, State
-│   ├── models/                # EulerEquations, EulerState
-│   ├── problems/              # RiemannProblem1D
-│   ├── methods/               # SpatialOperator, FiniteVolume
-│   │   ├── fluxes/            # GodunovFlux
-│   │   └── riemann/           # ExactEulerRiemannSolver
-│   ├── integrators/           # TimeIntegrator, ExplicitEuler
-│   ├── solvers/               # Solver, ExplicitSolver
-│   ├── io/                    # ResultWriter, CsvResultWriter
-│   └── parallel/              # Пустые резервы
-├── src/                       # Реализации нетемплейтных компонентов
-├── tests/
-├── docs/
-└── benchmarks/
-```
+## Какие конфиги читаются
 
-Соседний каталог `../utils/` содержит `toml-processor.hpp`, `toml-processor.cpp`, `math-expression.cpp`, зависимости `toml.hpp` и `exprtk.hpp`, лицензию, спецификацию, пример и тесты. Его код не дублируется в этом дереве.
-
-Модели кроме EulerEquations, Upwind/CentralDifference, RusanovFlux, общий BoundaryCondition, волновой шаг, RK4, LinearSolver и параллельные компоненты остаются заготовками. Газовый FiniteVolume сейчас поддерживает обе границы transmissive напрямую.
-
-## Сборка и проверка
-
-Из этого каталога:
-
-```sh
-cmake -S . -B /tmp/numerical-solver-build -DBUILD_TESTING=ON
-cmake --build /tmp/numerical-solver-build
-ctest --test-dir /tmp/numerical-solver-build --output-on-failure
-```
-
-Для сборки нужен соседний каталог `../utils` с существующим ридером и toml.hpp. Цели `numerics` и `euler-app` разделяют численную библиотеку и сборку газовой задачи; `solver-cli` связывается с `euler-app`. CTest проверяет также исходный `config-reader`. Подключение численной библиотеки: `target_link_libraries(my-app PRIVATE numerics)`.
-
-## Mesh и Field
-
-`CartesianMesh<Dim>` задаёт равномерную сетку ячеек. Первая ось меняется быстрее остальных при переводе индексов в один номер. Доступны центры, объём ячейки, размеры сетки, шаги, границы области, координаты граней и узлов. `nodeCount()` возвращает число узлов, `nodePosition(id)` — координаты узла. Для многомерных индексов узлов используются `flattenNode`/`unflattenNode`, для ячеек — прежние `flatten`/`unflatten`.
-
-`Field<T, Dim>` поддерживает три варианта:
-
-| FieldLocation | Что хранится | Число значений |
+| Что | Чем читается | Можно запустить расчёт? |
 | --- | --- | --- |
-| `CellCenter` | Значение функции в центре ячейки | `mesh.cellCount()` |
-| `CellAverage` | Среднее функции по объёму ячейки; вариант по умолчанию | `mesh.cellCount()` |
-| `Node` | Значение функции в узле — вершине ячейки, включая границы | `mesh.nodeCount()` |
+| `configs/toro_*.toml`, версия 2, газ | `EulerConfig` внутри CLI | Да |
+| Волновой TOML версии 1 | Твой `utils/ConfigProcessor` | Прочитать можно; сам волновой расчёт пока не написан |
 
-В 1D у N ячеек N+1 узел, в нескольких измерениях число узлов равно произведению `(shape[d]+1)`. Среднее по ячейке и значение в её центре в общем случае различаются. Выбор размещения не выполняет интерполяцию или усреднение. Фиктивные ячейки и узлы пока не добавлены.
+ExprTk находится в `utils` и вычисляет формулы для его ридера. Газовые конфиги CLI содержат обычные числа и ExprTk не используют. [Коротко про utils](../utils/README.md).
 
-```cpp
-CartesianMesh<1> mesh({0.0}, {0.1}, {10});
-Field<double, 1> density(mesh, 1.0);
-density[3] = 0.125;
-double x = mesh.cellCenter(3)[0];
-double leftFace = mesh.faceCoordinate(0, 3);
-density.fill(1.0);
+## Где какой код
 
-Field<double, 1> displacement(mesh, 0.0, FieldLocation::Node);
-displacement[mesh.nodeCount() - 1] = 2.0; // Правый граничный узел.
-auto rightEnd = mesh.nodePosition(mesh.nodeCount() - 1);
-```
+| Файл | Что делает |
+| --- | --- |
+| [main.cpp](apps/solver-cli/main.cpp) | Получает путь к конфигу из командной строки |
+| [EulerConfig.cpp](apps/solver-cli/config/EulerConfig.cpp) | Читает газовый TOML и проверяет параметры |
+| [EulerRun.cpp](apps/solver-cli/EulerRun.cpp) | Создаёт нужные объекты и запускает расчёт |
+| [RiemannProblem1D.cpp](src/problems/RiemannProblem1D.cpp) | Раскладывает начальные данные по ячейкам |
+| [EulerEquations.cpp](src/models/EulerEquations.cpp) | Формулы газа: давление, энергия, скорость звука |
+| [ExactEulerRiemannSolver.cpp](src/methods/riemann/ExactEulerRiemannSolver.cpp) | Решает один разрыв между двумя состояниями газа |
+| [GodunovFlux.hpp](include/numerics/methods/fluxes/GodunovFlux.hpp) | Вычисляет перенос массы, импульса и энергии через одну границу ячеек |
+| [FiniteVolume.cpp](src/methods/FiniteVolume.cpp) | Собирает эти потоки по всей сетке и ограничивает шаг времени |
+| [ExplicitEuler.hpp](include/numerics/integrators/ExplicitEuler.hpp) | Считает новые значения за один шаг |
+| [ExplicitSolver.hpp](include/numerics/solvers/ExplicitSolver.hpp) | Повторяет шаги до заданного времени |
+| [CsvResultWriter.cpp](src/io/CsvResultWriter.cpp) | Записывает результат в CSV |
+| [plot_toro.py](../plot_toro.py) | Строит графики из результата |
 
-`State` также принимает `FieldLocation::Node`: все его компоненты и рабочие буферы получают узловой размер. В одном State размещение у всех компонент одинаково.
+`Mesh` — сетка. `Field` — значения одной величины на сетке. `State` — все поля расчёта и его текущее время. `Solver` — общий интерфейс решателя; газовый расчёт использует `ExplicitSolver`.
 
-`at()` и `operator[]` проверяют индекс. Копия поля получает собственные значения, но ссылается на ту же сетку. Присваивание копирует и значения, и привязку к сетке. Сетка должна жить дольше всех связанных полей; менять её присваиванием или перемещать при живых полях нельзя. Временная сетка в конструкторе поля запрещена.
+В расчёте газа хранятся средние значения по ячейкам. `Field` также умеет хранить значения в центрах и узлах: `CellCenter`, `Node`. У 10 ячеек 11 узлов. Выбор варианта хранения сам ничего не усредняет и не пересчитывает.
 
-`isCompatibleWith()` требует тот же объект сетки, одинаковое размещение и размер; отдельные объекты сеток автоматически не приравниваются, даже если их параметры совпадают. Поле не проверяет физический смысл значений: положительность плотности и давления остаётся задачей модели.
+Файлы других моделей и методов оставлены пустыми. Их наличие не означает, что эти методы уже работают.
+
+[Как проверить программу](tests/README.md).

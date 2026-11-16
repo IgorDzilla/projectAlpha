@@ -1,3 +1,4 @@
+#include "config/EulerConfig.hpp"
 #include "numerics/methods/FiniteVolume.hpp"
 #include "numerics/problems/RiemannProblem1D.hpp"
 #include "numerics/integrators/ExplicitEuler.hpp"
@@ -64,21 +65,23 @@ void constantAndContact() {
     for (std::size_t i=0;i<20;++i)
       near(solver.state().component(c)[i],before.component(c)[i],"stationary contact changed");
 }
-void balanceAndCache() {
-  CartesianMesh<1> mesh({0},{0.025},{40});
-  auto state=RiemannProblem1D({1,0,1},{0.125,0,0.1},0.5).initialState(mesh);
-  const EulerEquations gas;
-  FiniteVolume op(mesh);
+void balanceAndCache(const EulerConfig& config) {
+  const double dx=(config.xMax-config.xMin)/40;
+  CartesianMesh<1> mesh({config.xMin},{dx},{40});
+  auto state=RiemannProblem1D(config.left,config.right,config.discontinuity,config.gamma)
+      .initialState(mesh,config.tStart);
+  const EulerEquations gas(config.gamma);
+  FiniteVolume op(mesh,config.gamma,config.cfl,config.exact);
   const double limit=op.maxExplicitEulerStep(state);
   // Ограничение включает скорость на каждой грани, включая обе внешние.
   double maximum=0;
-  GodunovFlux flux;
+  GodunovFlux flux(config.gamma,config.exact);
   for (std::size_t f=0;f<=40;++f) {
     auto l=gas.toPrimitive(eulerCell(state,f==0?0:f-1));
     auto r=gas.toPrimitive(eulerCell(state,f==40?39:f));
     maximum=std::max(maximum,flux(l,r).signalSpeed);
   }
-  near(limit,0.4*0.025/maximum,"CFL bound");
+  near(limit,config.cfl*dx/maximum,"CFL bound");
   const auto before=integral(state);
   const auto leftFlux=gas.physicalFlux(gas.toPrimitive(eulerCell(state,0)));
   const auto rightFlux=gas.physicalFlux(gas.toPrimitive(eulerCell(state,39)));
@@ -90,7 +93,8 @@ void balanceAndCache() {
   for (std::size_t c=0;c<3;++c) near(after[c]-before[c],limit*boundary[c],"boundary conservation balance");
   near(integral(state)[0],before[0],"input state changed");
   // Меняем значения того же State без изменения адреса и времени.
-  auto fast=RiemannProblem1D({1,10,1},{1,10,1},0.5).initialState(mesh);
+  auto fast=RiemannProblem1D({1,100,1},{1,100,1},config.discontinuity,config.gamma)
+      .initialState(mesh,config.tStart);
   state.replaceFields(fast.fields());
   check(op.maxExplicitEulerStep(state)<limit,"stale cached CFL");
   auto rates=state.makeFields();
@@ -103,19 +107,19 @@ void balanceAndCache() {
   state.component(2)[3]=-1;
   fails([&]{op.maxExplicitEulerStep(state);});
   fails([&]{FiniteVolume bad(mesh,1.4,0.51);});
-  CartesianMesh<1> other({0},{0.025},{40});
-  fails([&]{op.validate(RiemannProblem1D({1,0,1},{1,0,1},0.5).initialState(other));});
+  CartesianMesh<1> other({config.xMin},{dx},{40});
+  fails([&]{op.validate(RiemannProblem1D(config.left,config.right,config.discontinuity,config.gamma).initialState(other));});
   State<1> nodes(mesh,{"density","momentum","energy"},0,FieldLocation::Node);
   fails([&]{op.validate(nodes);});
 }
 // Точный профиль усредняем отдельно в каждой ячейке, разбив интеграл по волнам.
 // Четырёхточечная квадратура Гаусса не интегрирует скачок целиком одним отрезком.
 double exactAverageDensity(const ExactEulerRiemannSolver& exact, const RiemannSolution& r,
-                           double a,double b,double time) {
+                           double a,double b,double time,double x0) {
   std::vector<double> points{a,b};
   for (double speed : {r.leftWave.headSpeed,r.leftWave.tailSpeed,r.contactSpeed,
                        r.rightWave.headSpeed,r.rightWave.tailSpeed}) {
-    const double x=0.5+time*speed;
+    const double x=x0+time*speed;
     if (x>a && x<b) points.push_back(x);
   }
   std::sort(points.begin(),points.end());
@@ -124,47 +128,51 @@ double exactAverageDensity(const ExactEulerRiemannSolver& exact, const RiemannSo
   double sum=0;
   for (std::size_t k=1;k<points.size();++k) {
     const double mid=(points[k-1]+points[k])/2, half=(points[k]-points[k-1])/2;
-    for (int j=0;j<4;++j) sum+=half*weights[j]*exact.sample(r,(mid+half*nodes[j]-0.5)/time).density;
+    for (int j=0;j<4;++j) sum+=half*weights[j]*exact.sample(r,(mid+half*nodes[j]-x0)/time).density;
   }
   return sum/(b-a);
 }
-double sodError(std::size_t n) {
-  CartesianMesh<1> mesh({0},{1.0/n},{n});
-  auto state=RiemannProblem1D({1,0,1},{0.125,0,0.1},0.5).initialState(mesh);
-  ExplicitSolver<1> solver(state,std::make_unique<FiniteVolume>(mesh),
-                          std::make_unique<ExplicitEuler<1>>(),1);
-  const double end=0.2;
-  solver.run(end);
-  check(solver.state().time()==end,"final time not exact");
-  const ExactEulerRiemannSolver exact;
-  const auto solution=exact.solve({1,0,1},{0.125,0,0.1});
-  const EulerEquations gas;
+double sodError(const EulerConfig& config, std::size_t n) {
+  CartesianMesh<1> mesh({config.xMin},{(config.xMax-config.xMin)/n},{n});
+  auto state=RiemannProblem1D(config.left,config.right,config.discontinuity,config.gamma)
+      .initialState(mesh,config.tStart);
+  ExplicitSolver<1> solver(state,std::make_unique<FiniteVolume>(mesh,config.gamma,config.cfl,config.exact),
+                          std::make_unique<ExplicitEuler<1>>(),std::numeric_limits<double>::max());
+  solver.run(config.tEnd);
+  check(solver.state().time()==config.tEnd,"final time not exact");
+  const ExactEulerRiemannSolver exact(config.gamma,config.exact);
+  const auto solution=exact.solve(config.left,config.right);
+  const EulerEquations gas(config.gamma);
   double error=0;
   for (std::size_t i=0;i<n;++i) {
     gas.toPrimitive(eulerCell(solver.state(),i));
-    const double reference=exactAverageDensity(exact,solution,mesh.faceCoordinate(0,i),mesh.faceCoordinate(0,i+1),end);
+    const double reference=exactAverageDensity(exact,solution,mesh.faceCoordinate(0,i),mesh.faceCoordinate(0,i+1),config.tEnd-config.tStart,config.discontinuity);
     error+=std::abs(solver.state().component(0)[i]-reference)*mesh.step()[0];
   }
   std::cout << "Sod cells=" << n << " density L1=" << error << '\n';
   return error;
 }
-void failureIsAtomic() {
-  CartesianMesh<1> mesh({0},{0.5},{2});
-  ExactRiemannOptions opts; opts.maxIterations=1;
-  auto state=RiemannProblem1D({1,0,1},{0.125,0,0.1},0.5).initialState(mesh);
-  ExplicitSolver<1> solver(state,std::make_unique<FiniteVolume>(mesh,1.4,0.4,opts),
+void failureIsAtomic(const EulerConfig& config) {
+  CartesianMesh<1> mesh({config.xMin},{(config.xMax-config.xMin)/config.cells},{config.cells});
+  auto opts=config.exact; opts.maxIterations=1;
+  auto state=RiemannProblem1D(config.left,config.right,config.discontinuity,config.gamma)
+      .initialState(mesh,config.tStart);
+  ExplicitSolver<1> solver(state,std::make_unique<FiniteVolume>(mesh,config.gamma,config.cfl,opts),
                           std::make_unique<ExplicitEuler<1>>(),1);
-  fails([&]{solver.run(0.1);});
-  check(solver.state().time()==0,"failed solve advanced time");
+  fails([&]{solver.run(config.tEnd);});
+  check(solver.state().time()==config.tStart,"failed solve advanced time");
   for (std::size_t c=0;c<3;++c)
-    for (std::size_t i=0;i<2;++i)
+    for (std::size_t i=0;i<config.cells;++i)
       near(solver.state().component(c)[i],state.component(c)[i],"failed solve changed state");
 }
 }
-int main() {
+int main(int argc, char** argv) {
   try {
-    projection(); constantAndContact(); balanceAndCache(); failureIsAtomic();
-    const double coarse=sodError(100), fine=sodError(200);
+    check(argc==2,"expected Sod TOML path");
+    const auto config=readEulerConfig(argv[1]);
+    check(config.tEnd>config.tStart && config.cells>=2,"refinement requires positive duration and at least two cells");
+    projection(); constantAndContact(); balanceAndCache(config); failureIsAtomic(config);
+    const double coarse=sodError(config,config.cells/2), fine=sodError(config,config.cells);
     check(fine<0.85*coarse && fine<0.02,"Sod refinement failed");
     std::cout << "Finite volume checks passed\n";
   } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
