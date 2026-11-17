@@ -10,20 +10,17 @@
 
 struct EulerOutputConfig {
   std::filesystem::path directory;
-  std::size_t saveEvery = 1;
   std::vector<std::string> fields{"density", "momentum", "energy", "velocity", "pressure"};
 };
 
-// Проверенный профиль TOML v2. В численную библиотеку TOML не передаётся.
+// Проверенный профиль TOML v3 для одного точного разрыва.
 struct EulerConfig {
   double gamma = 1.4;
   double xMin = 0.0, xMax = 1.0, tStart = 0.0, tEnd = 0.0;
-  std::size_t cells = 0;
+  std::size_t points = 0; // Число точек отбора профиля.
   double discontinuity = 0.5;
   EulerPrimitiveState left, right;
-  double cfl = 0.4;
   ExactRiemannOptions exact;
-  std::size_t maxSteps = 1000000;
   std::optional<EulerOutputConfig> output;
 };
 

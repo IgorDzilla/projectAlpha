@@ -78,10 +78,10 @@ EulerPrimitiveState primitive(const toml::table& t, const std::string& path, con
 }
 
 EulerConfig parseEulerConfig(const toml::table& root, const std::filesystem::path& baseDirectory) {
-  keys(root,"root",{"config_version","problem","parameters","domain","grid","initials","boundaries","solver","output"});
+  keys(root,"root",{"config_version","problem","parameters","domain","grid","initials","solver","output"});
   const auto version = required(root,"config_version","root").value_exact<std::int64_t>();
-  if (!version || *version != 2)
-    fail("config_version", "this CLI runs Euler TOML v2; wave v1 execution is not implemented");
+  if (!version || *version != 3)
+    fail("config_version", "this CLI requires exact Euler Riemann TOML v3");
   const auto& problem = table(root,"problem","root");
   keys(problem,"problem",{"type"}); choice(problem,"type","problem","euler_1d");
   EulerConfig c;
@@ -95,11 +95,11 @@ EulerConfig parseEulerConfig(const toml::table& root, const std::filesystem::pat
   const auto x = interval(domain,"x",false), t = interval(domain,"t",true);
   c.xMin=x.first; c.xMax=x.second; c.tStart=t.first; c.tEnd=t.second;
   const auto& grid = table(root,"grid","root");
-  keys(grid,"grid",{"cells"});
-  c.cells = positiveInteger(required(grid,"cells","grid"),"grid.cells");
-  const double dx = (c.xMax-c.xMin)/static_cast<double>(c.cells);
+  keys(grid,"grid",{"points"});
+  c.points = positiveInteger(required(grid,"points","grid"),"grid.points");
+  const double dx = (c.xMax-c.xMin)/static_cast<double>(c.points);
   if (!(dx > 0.0) || c.xMin + dx == c.xMin || c.xMax - dx == c.xMax)
-    fail("grid.cells","cell spacing cannot be represented on this domain");
+    fail("grid.points","sampling spacing cannot be represented on this domain");
   const auto& initials = table(root,"initials","root");
   keys(initials,"initials",{"type","discontinuity","left","right"});
   choice(initials,"type","initials","riemann");
@@ -108,21 +108,9 @@ EulerConfig parseEulerConfig(const toml::table& root, const std::filesystem::pat
     fail("initials.discontinuity","must lie strictly inside domain.x");
   c.left=primitive(table(initials,"left","initials"),"initials.left",gas);
   c.right=primitive(table(initials,"right","initials"),"initials.right",gas);
-  const auto& boundaries = table(root,"boundaries","root");
-  keys(boundaries,"boundaries",{"left","right"});
-  for (const char* side : {"left","right"}) {
-    const auto& b=table(boundaries,side,"boundaries");
-    keys(b,std::string("boundaries.")+side,{"type"});
-    choice(b,"type",std::string("boundaries.")+side,"transmissive");
-  }
   const auto& solver=table(root,"solver","root");
-  keys(solver,"solver",{"method","flux","integrator","cfl","exact","max_steps"});
-  choice(solver,"method","solver","finite_volume");
-  choice(solver,"flux","solver","godunov_exact");
-  choice(solver,"integrator","solver","explicit_euler");
-  c.cfl=number(solver,"cfl","solver");
-  if (c.cfl <= 0.0 || c.cfl > 0.5) fail("solver.cfl","must be in (0, 0.5]");
-  if (const auto* n=solver.get("max_steps")) c.maxSteps=positiveInteger(*n,"solver.max_steps");
+  keys(solver,"solver",{"method","exact"});
+  choice(solver,"method","solver","exact_riemann");
   if (solver.contains("exact")) {
     const auto& exact=table(solver,"exact","solver");
     keys(exact,"solver.exact",{"pressure_rtol","residual_rtol","max_iterations","max_bracket_expansions"});
@@ -135,12 +123,11 @@ EulerConfig parseEulerConfig(const toml::table& root, const std::filesystem::pat
   }
   if (root.contains("output")) {
     const auto& out=table(root,"output","root");
-    keys(out,"output",{"directory","format","save_every","fields"});
+    keys(out,"output",{"directory","format","fields"});
     choice(out,"format","output","csv");
     EulerOutputConfig output;
     const auto directory = string(required(out,"directory","output"),"output.directory");
     output.directory=std::filesystem::absolute(baseDirectory / directory).lexically_normal();
-    if (const auto* n=out.get("save_every")) output.saveEvery=positiveInteger(*n,"output.save_every");
     if (out.contains("fields")) {
       const auto* fields=required(out,"fields","output").as_array();
       if (!fields || fields->empty()) fail("output.fields","expected nonempty array");

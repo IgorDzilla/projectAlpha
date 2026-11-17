@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Графики Торо: точный вывод riemann-test или сеточный вывод solver-cli."""
+"""Графики Торо: прямое точное решение solver-cli и эталонные тесты."""
 import argparse
 import csv
 from dataclasses import dataclass
@@ -42,6 +42,10 @@ class Case:
         return self.errors is not None
 
     @property
+    def direct_exact(self):
+        return self.meta.get("method") == "exact_riemann"
+
+    @property
     def name(self):
         return self.directory.name
 
@@ -67,8 +71,9 @@ def table(path):
 
 
 def grid(data, points):
-    data = data[np.lexsort((data["cell"], data["time"]))]
-    cells = data["cell"].reshape(-1, points)
+    index = "point" if "point" in data.dtype.names else "cell"
+    data = data[np.lexsort((data[index], data["time"]))]
+    cells = data[index].reshape(-1, points)
     times = data["time"].reshape(-1, points)
     x = data["x"].reshape(-1, points)
     if not np.all(cells == np.arange(points)) or not np.all(times == times[:, :1]):
@@ -109,7 +114,8 @@ def read_case(directory):
     gamma = number(meta, "gamma")
     xmin, xmax = number(meta, "x_min"), number(meta, "x_max")
     start, end = number(meta, "t_start"), number(meta, "t_end")
-    cells, snapshots = int(meta["cells"]), int(meta["snapshots"])
+    cells = int(meta["points"] if "points" in meta else meta["cells"])
+    snapshots = int(meta["snapshots"])
     if gamma <= 1 or xmax <= xmin or end < start or cells <= 0 or snapshots <= 0 or number(meta, "final_time") != end:
         raise ValueError("Неверные параметры газа, сетки или конечного времени")
     times, x, values = grid(table(directory / "solution.csv"), cells)
@@ -153,12 +159,12 @@ def profiles(case):
     fields = [k for k in LABELS if k in case.values and k not in ("momentum", "energy")]
     fields = fields or list(case.values)
     fig, axes = plt.subplots((len(fields)+1)//2, 2, figsize=(12, 3*((len(fields)+1)//2)+1.2), squeeze=False)
-    heading(fig, case, "Точное решение" if case.exact else "Годунов первого порядка")
+    heading(fig, case, "Точное решение" if case.exact or case.direct_exact else "Годунов первого порядка")
     for ax, key in zip(axes.flat, fields):
         if not case.exact and len(case.times) > 1:
             ax.plot(case.x, case.values[key][0], color=GRAY, ls="--", label="Начальное")
         ax.plot(case.x, case.values[key][-1], color=BLUE, label="Конечное")
-        if case.exact:
+        if case.exact or case.direct_exact:
             for _, shock, head, tail in waves(case):
                 for speed in ([head] if shock else [head, tail]):
                     ax.axvline(number(case.meta, "x0") + speed*np.ptp(case.times), color=GRAY, lw=.8, ls="-" if shock else ":")
@@ -167,7 +173,7 @@ def profiles(case):
         ax.margins(y=.1)
     for ax in list(axes.flat)[len(fields):]:
         ax.set_visible(False)
-    if case.exact:
+    if case.exact or case.direct_exact:
         handles = [Line2D([], [], color=GRAY, label="УВ"), Line2D([], [], color=GRAY, ls=":", label="Границы ВР"),
                    Line2D([], [], color=RED, ls="--", label="Контакт")]
     else:
@@ -218,7 +224,8 @@ def xt_diagram(case):
 
 def pu_diagram(case):
     fig, ax = plt.subplots(figsize=(9, 6.5))
-    heading(fig, case, "Волновые кривые p–u" if case.exact else "Состояния ячеек p–u")
+    heading(fig, case, "Волновые кривые p–u" if case.exact else
+            "Точный профиль p–u" if case.direct_exact else "Состояния ячеек p–u")
     if case.exact:
         p = case.curves["p"]
         for side, color in (("left", BLUE), ("right", RED)):
@@ -232,6 +239,11 @@ def pu_diagram(case):
         ax.scatter(number(case.meta, "u_star"), number(case.meta, "p_star"), marker="*", s=120, color="black", label="$(u_*,p_*)$")
         ax.legend(fontsize=9, ncol=2)
         logarithmic = int(case.meta["test"]) >= 3
+    elif case.direct_exact:
+        image = ax.scatter(case.values["velocity"][-1], case.values["pressure"][-1],
+                           c=case.x, s=18, cmap="viridis")
+        fig.colorbar(image, ax=ax, label="x")
+        logarithmic = np.ptp(np.log10(case.values["pressure"][-1])) > 2
     else:
         image = ax.scatter(case.values["velocity"][-1], case.values["pressure"][-1], c=case.x, s=18, cmap="viridis")
         fig.colorbar(image, ax=ax, label="x")
@@ -263,6 +275,16 @@ def report_section(case):
         same = np.isclose(number(case.meta, "rho_star_left"), number(case.meta, "rho_star_right"), rtol=1e-7)
         lines += ["", "На контакте p и u непрерывны. " + ("Звёздные состояния совпадают, видимого скачка нет." if same else "Скачки видны у ρ, e, a и s."),
                   "В веере s=p/ρᵞ постоянно; при прохождении ударной волны энтропийная функция возрастает.", ""]
+    elif case.direct_exact:
+        lines += ["Точный профиль одной задачи Римана; значения взяты в точках x без шагов по времени.", "",
+                  f"p*={number(case.meta, 'p_star'):.9g}; u*={number(case.meta, 'u_star'):.9g}; "
+                  f"ρ*L={number(case.meta, 'rho_star_left'):.9g}; ρ*R={number(case.meta, 'rho_star_right'):.9g}.", "",
+                  "| Волна | Тип | Голова / скачок | Хвост |", "|---|---|---:|---:|"]
+        for side, shock, head, tail in waves(case):
+            lines.append(f"| {'Левая' if side == 'left' else 'Правая'} | "
+                         f"{'УВ' if shock else 'ВР'} | {head:.9g} | "
+                         f"{'—' if shock else f'{tail:.9g}'} |")
+        lines += [f"| Контакт | контакт | {number(case.meta, 'contact'):.9g} | — |", ""]
     else:
         lines += ["Сеточный расчёт Годунова: средние по ячейкам; точные волновые кривые не вычисляются.", "",
                   "| Поле | Минимум | Максимум |", "|---|---:|---:|"]
@@ -306,7 +328,7 @@ def results_page(case):
 
 def render(cases, output):
     output.mkdir(parents=True, exist_ok=True)
-    report, summary = ["# Тесты Торо", ""], []
+    report, summary = ["# Точные профили Торо" if cases[0].direct_exact else "# Тесты Торо", ""], []
     if cases[0].exact:
         report += ["Эталоны: Торо, таблица 4.3. Допуск: atol + 2e-6·|эталон|.",
                    "atol учитывает округление таблицы и входов теста 5. При нулевом эталоне относительное отклонение не определено (—).", ""]
@@ -314,7 +336,9 @@ def render(cases, output):
         for case in cases:
             directory = output / case.name
             directory.mkdir(parents=True, exist_ok=True)
-            drawings = [("profiles", profiles), ("xt", xt_diagram)]
+            drawings = [("profiles", profiles)]
+            if not case.direct_exact:
+                drawings.append(("xt", xt_diagram))
             if {"pressure", "velocity"} <= case.values.keys():
                 drawings.append(("pu", pu_diagram))
             report += report_section(case)
@@ -329,7 +353,7 @@ def render(cases, output):
                 pdf.savefig(fig)
                 plt.close(fig)
                 report += ["", f"![{name}]({case.name}/{name}.png)"]
-            if len(drawings) == 2:
+            if "pu" not in [name for name, _ in drawings]:
                 report += ["Диаграмма p–u пропущена: недостаточно полей."]
             if case.exact:
                 summary += [[case.name]+[r[k] for k in ERROR_COLUMNS] for r in case.errors]

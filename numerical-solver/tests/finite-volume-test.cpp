@@ -71,7 +71,7 @@ void balanceAndCache(const EulerConfig& config) {
   auto state=RiemannProblem1D(config.left,config.right,config.discontinuity,config.gamma)
       .initialState(mesh,config.tStart);
   const EulerEquations gas(config.gamma);
-  FiniteVolume op(mesh,config.gamma,config.cfl,config.exact);
+  FiniteVolume op(mesh,config.gamma,0.4,config.exact);
   const double limit=op.maxExplicitEulerStep(state);
   // Ограничение включает скорость на каждой грани, включая обе внешние.
   double maximum=0;
@@ -81,7 +81,7 @@ void balanceAndCache(const EulerConfig& config) {
     auto r=gas.toPrimitive(eulerCell(state,f==40?39:f));
     maximum=std::max(maximum,flux(l,r).signalSpeed);
   }
-  near(limit,config.cfl*dx/maximum,"CFL bound");
+  near(limit,0.4*dx/maximum,"CFL bound");
   const auto before=integral(state);
   const auto leftFlux=gas.physicalFlux(gas.toPrimitive(eulerCell(state,0)));
   const auto rightFlux=gas.physicalFlux(gas.toPrimitive(eulerCell(state,39)));
@@ -136,7 +136,7 @@ double sodError(const EulerConfig& config, std::size_t n) {
   CartesianMesh<1> mesh({config.xMin},{(config.xMax-config.xMin)/n},{n});
   auto state=RiemannProblem1D(config.left,config.right,config.discontinuity,config.gamma)
       .initialState(mesh,config.tStart);
-  ExplicitSolver<1> solver(state,std::make_unique<FiniteVolume>(mesh,config.gamma,config.cfl,config.exact),
+  ExplicitSolver<1> solver(state,std::make_unique<FiniteVolume>(mesh,config.gamma,0.4,config.exact),
                           std::make_unique<ExplicitEuler<1>>(),std::numeric_limits<double>::max());
   solver.run(config.tEnd);
   check(solver.state().time()==config.tEnd,"final time not exact");
@@ -153,16 +153,16 @@ double sodError(const EulerConfig& config, std::size_t n) {
   return error;
 }
 void failureIsAtomic(const EulerConfig& config) {
-  CartesianMesh<1> mesh({config.xMin},{(config.xMax-config.xMin)/config.cells},{config.cells});
+  CartesianMesh<1> mesh({config.xMin},{(config.xMax-config.xMin)/config.points},{config.points});
   auto opts=config.exact; opts.maxIterations=1;
   auto state=RiemannProblem1D(config.left,config.right,config.discontinuity,config.gamma)
       .initialState(mesh,config.tStart);
-  ExplicitSolver<1> solver(state,std::make_unique<FiniteVolume>(mesh,config.gamma,config.cfl,opts),
+  ExplicitSolver<1> solver(state,std::make_unique<FiniteVolume>(mesh,config.gamma,0.4,opts),
                           std::make_unique<ExplicitEuler<1>>(),1);
   fails([&]{solver.run(config.tEnd);});
   check(solver.state().time()==config.tStart,"failed solve advanced time");
   for (std::size_t c=0;c<3;++c)
-    for (std::size_t i=0;i<config.cells;++i)
+    for (std::size_t i=0;i<config.points;++i)
       near(solver.state().component(c)[i],state.component(c)[i],"failed solve changed state");
 }
 }
@@ -170,9 +170,9 @@ int main(int argc, char** argv) {
   try {
     check(argc==2,"expected Sod TOML path");
     const auto config=readEulerConfig(argv[1]);
-    check(config.tEnd>config.tStart && config.cells>=2,"refinement requires positive duration and at least two cells");
+    check(config.tEnd>config.tStart && config.points>=2,"refinement requires positive duration and at least two cells");
     projection(); constantAndContact(); balanceAndCache(config); failureIsAtomic(config);
-    const double coarse=sodError(config,config.cells/2), fine=sodError(config,config.cells);
+    const double coarse=sodError(config,config.points/2), fine=sodError(config,config.points);
     check(fine<0.85*coarse && fine<0.02,"Sod refinement failed");
     std::cout << "Finite volume checks passed\n";
   } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

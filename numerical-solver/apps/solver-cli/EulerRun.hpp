@@ -4,7 +4,9 @@
 struct EulerRunResult {
   double finalTime;
   std::size_t snapshots;
+  double pStar;
+  double uStar;
 };
 
-// Собирает и запускает только поддержанный профиль: Euler 1D + Godunov + Euler.
+// Решает один исходный разрыв и отбирает точный профиль в заданное время.
 EulerRunResult runEuler(const EulerConfig& config);
