@@ -45,24 +45,18 @@ struct RiemannSolution {
 
   RiemannGuessType guessType = RiemannGuessType::Linearized;
   double initialPressure = 0.0;
-  std::size_t iterations = 0; // Уточнения давления: Ньютон и деление интервала.
-  std::size_t bracketExpansions = 0;
-  double relativeResidual = 0.0; // Невязка уравнения давления / масштаб скорости.
-  double relativeBracketWidth = 0.0;
-  double relativePressureChange = 0.0;
-  bool exactPressureRoot = false; // Невязка точно нулевая в арифметике double.
-  double signalSpeed = 0.0; // Максимальный модуль скорости для будущего CFL.
+  std::size_t iterations = 0; // Итерации Ньютона, как в исходном решателе.
+  double relativePressureChange = 0.0; // Последний относительный шаг Ньютона.
+  double signalSpeed = 0.0; // Нужна сохранённому GodunovFlux.
 };
 
 struct ExactRiemannOptions {
   double pressureRtol = 1.0e-6; // 2*|pNew-pOld|/(pNew+pOld), как в §15.7.
-  double residualRtol = 1.0e-10; // Проверка невязки при остановке из-за округления.
-  std::size_t maxIterations = 256;
-  std::size_t maxBracketExpansions = 128;
+  std::size_t maxIterations = 100;
 };
 
 // Локальная задача Эйлера в 1D. Не является Solver<1>: не хранит поле и время.
-// Основа перенесена из пользовательского riemannSolver; алгоритм уточнения усилен.
+// Алгоритм GUESSP + Ньютона сохранён из пользовательского riemannSolver.
 class ExactEulerRiemannSolver {
  public:
   explicit ExactEulerRiemannSolver(double gamma = 1.4,
@@ -75,7 +69,7 @@ class ExactEulerRiemannSolver {
 
   // xi = (x-x_face)/(t-t_n); для неподвижной грани xi=0.
   // Принимать результат solve() с тем же gamma; поля результата не менять.
-  // На скачке возвращается правый пространственный след.
+  // На контакте выбирается левое состояние, как в исходном решателе.
   EulerPrimitiveState sample(const RiemannSolution& solution, double xi) const;
 
   double gamma() const noexcept { return gas_.gamma(); }

@@ -113,13 +113,11 @@ EulerConfig parseEulerConfig(const toml::table& root, const std::filesystem::pat
   choice(solver,"method","solver","exact_riemann");
   if (solver.contains("exact")) {
     const auto& exact=table(solver,"exact","solver");
-    keys(exact,"solver.exact",{"pressure_rtol","residual_rtol","max_iterations","max_bracket_expansions"});
+    keys(exact,"solver.exact",{"pressure_rtol","max_iterations"});
     if (const auto* n=exact.get("pressure_rtol")) c.exact.pressureRtol=number(*n,"solver.exact.pressure_rtol");
-    if (const auto* n=exact.get("residual_rtol")) c.exact.residualRtol=number(*n,"solver.exact.residual_rtol");
     if (const auto* n=exact.get("max_iterations")) c.exact.maxIterations=positiveInteger(*n,"solver.exact.max_iterations");
-    if (const auto* n=exact.get("max_bracket_expansions")) c.exact.maxBracketExpansions=positiveInteger(*n,"solver.exact.max_bracket_expansions");
-    if (c.exact.pressureRtol <= 0.0 || c.exact.residualRtol <= 0.0)
-      fail("solver.exact","tolerances must be positive");
+    if (c.exact.pressureRtol <= 0.0)
+      fail("solver.exact.pressure_rtol","must be positive");
   }
   if (root.contains("output")) {
     const auto& out=table(root,"output","root");

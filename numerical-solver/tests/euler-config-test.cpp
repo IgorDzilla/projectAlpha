@@ -55,7 +55,8 @@ int main(int argc,char** argv) {
     bad([](auto& t){t["solver"].as_table()->insert_or_assign("cfl",0.4);});
     bad([](auto& t){t.insert_or_assign("boundaries",toml::table{});});
     bad([](auto& t){t["solver"]["exact"].as_table()->insert_or_assign("max_iterations",0);});
-    bad([](auto& t){t["solver"]["exact"].as_table()->insert_or_assign("residual_rtol",0);});
+    bad([](auto& t){t["solver"]["exact"].as_table()->insert_or_assign("pressure_rtol",0);});
+    bad([](auto& t){t["solver"]["exact"].as_table()->insert_or_assign("max_bracket_expansions",10);});
     bad([](auto& t){t["solver"].as_table()->insert_or_assign("exact",4);});
     bad([](auto& t){t["output"].as_table()->insert_or_assign("format","vtk");});
     bad([](auto& t){t["output"].as_table()->insert_or_assign("save_every",10);});

@@ -1,4 +1,4 @@
-// Адаптировано из project Alpha/riemannSolver/src/exact-riemann-solver.cpp.
+// Адаптировано из riemannSolver 2/src/exact-riemann-solver.cpp.
 #include "numerics/methods/riemann/ExactEulerRiemannSolver.hpp"
 
 #include <algorithm>
@@ -20,7 +20,7 @@ struct PressureGuess {
 };
 
 double soundSpeed(const EulerPrimitiveState& state, double gamma) {
-  return EulerEquations(gamma).soundSpeed(state);
+  return std::sqrt(gamma * state.pressure / state.density);
 }
 
 // Функция f(p; W_K) имеет две ветви.
@@ -50,7 +50,7 @@ WaveFunctionValue evaluateWaveFunction(double pressure,
   const double ratio = pressure / state.pressure;
 
   return {
-      2.0 * a / (gamma - 1.0) * (std::expm1(exponent * std::log(ratio))),
+      2.0 * a / (gamma - 1.0) * (std::pow(ratio, exponent) - 1.0),
       std::pow(ratio, -(gamma + 1.0) / (2.0 * gamma)) /
           (state.density * a),
   };
@@ -222,8 +222,7 @@ ExactEulerRiemannSolver::ExactEulerRiemannSolver(double gamma,
                                                ExactRiemannOptions options)
     : gas_(gamma), options_(options) {
   if (!std::isfinite(options_.pressureRtol) || options_.pressureRtol <= 0.0 ||
-      !std::isfinite(options_.residualRtol) || options_.residualRtol <= 0.0 ||
-      options_.maxIterations == 0 || options_.maxBracketExpansions == 0) {
+      options_.maxIterations == 0) {
     throw std::invalid_argument("invalid exact Riemann options");
   }
 }
@@ -233,113 +232,55 @@ RiemannSolution ExactEulerRiemannSolver::solve(
   gas_.validate(left);
   gas_.validate(right);
   const double gamma = gas_.gamma();
-  const double aLeft = gas_.soundSpeed(left);
-  const double aRight = gas_.soundSpeed(right);
-  const double deltaVelocity = right.velocity - left.velocity;
+  const double aLeft = soundSpeed(left, gamma);
+  const double aRight = soundSpeed(right, gamma);
   const double vacuumLimit = 2.0 * (aLeft + aRight) / (gamma - 1.0);
-  if (!std::isfinite(deltaVelocity) || !std::isfinite(vacuumLimit)) {
+  if (!std::isfinite(right.velocity - left.velocity) || !std::isfinite(vacuumLimit)) {
     throw std::runtime_error("Riemann velocity scale overflow");
   }
-  if (deltaVelocity >= vacuumLimit) {
+  if (right.velocity - left.velocity >= vacuumLimit) {
     throw std::domain_error("vacuum is not supported by the exact Riemann solver");
   }
-  const double velocityScale = std::max({aLeft, aRight, std::abs(deltaVelocity)});
-  const auto residualAt = [&](double p) {
-    const double residual = evaluateWaveFunction(p, left, gamma).value +
-                            evaluateWaveFunction(p, right, gamma).value +
-                            deltaVelocity;
-    if (!std::isfinite(residual)) {
-      throw std::runtime_error("non-finite Riemann pressure residual");
-    }
-    return residual;
-  };
-
+  const PressureGuess guess = guessPressure(left, right, gamma);
+  double pressure = guess.value;
   RiemannSolution result;
   result.left = left;
   result.right = right;
   result.gamma = gamma;
-  double pressure = left.pressure;
-  // Равные состояния и чистый контакт решаются без итераций.
-  if (left.pressure == right.pressure && left.velocity == right.velocity) {
-    result.initialPressure = pressure;
-    result.exactPressureRoot = true;
-  } else {
-    // g(0)<0 известно из проверки вакуума. Производную при p=0 не вычисляем.
-    double low = 0.0;
-    double high = std::max(left.pressure, right.pressure);
-    double highResidual = residualAt(high);
-    while (highResidual < 0.0) {
-      if (result.bracketExpansions == options_.maxBracketExpansions) {
-        throw std::runtime_error("Riemann pressure bracket expansion limit reached");
-      }
-      high *= 2.0;
-      if (!std::isfinite(high)) {
-        throw std::runtime_error("Riemann pressure bracket overflow");
-      }
-      ++result.bracketExpansions;
-      highResidual = residualAt(high);
+  result.guessType = guess.type;
+  result.initialPressure = guess.value;
+
+  bool converged = false;
+  for (std::size_t iteration = 1; iteration <= options_.maxIterations; ++iteration) {
+    const WaveFunctionValue fLeft = evaluateWaveFunction(pressure, left, gamma);
+    const WaveFunctionValue fRight = evaluateWaveFunction(pressure, right, gamma);
+    const double residual =
+        fLeft.value + fRight.value + right.velocity - left.velocity;
+    const double derivative = fLeft.derivative + fRight.derivative;
+    if (!(derivative > 0.0) || !std::isfinite(derivative)) {
+      throw std::runtime_error("invalid derivative in Newton iteration");
     }
-    const PressureGuess guess = guessPressure(left, right, gamma);
-    result.guessType = guess.type;
-    pressure = (std::isfinite(guess.value) && guess.value > low && guess.value < high)
-                   ? guess.value : low + 0.5 * (high - low);
-    result.initialPressure = pressure;
-    bool converged = false;
-    if (highResidual == 0.0) {
-      pressure = high;
-      result.exactPressureRoot = true;
+
+    double nextPressure = pressure - residual / derivative;
+    // Как в оригинале: если Ньютон пересёк p=0, делаем половинный шаг.
+    if (!(nextPressure > 0.0) || !std::isfinite(nextPressure)) {
+      nextPressure = 0.5 * pressure;
+    }
+    result.relativePressureChange =
+        2.0 * std::abs(nextPressure - pressure) / (nextPressure + pressure);
+    pressure = nextPressure;
+    result.iterations = iteration;
+    if (result.relativePressureChange < options_.pressureRtol) {
       converged = true;
-    }
-    for (std::size_t i = 0; !converged && i < options_.maxIterations; ++i) {
-      const double residual = residualAt(pressure);
-      result.iterations = i + 1;
-      result.relativeResidual = std::abs(residual) / velocityScale;
-      if (residual == 0.0) {
-        result.relativeBracketWidth = 0.0;
-        result.exactPressureRoot = true;
-        converged = true;
-        break;
-      }
-      if (residual < 0.0) low = pressure;
-      else high = pressure;
-      result.relativeBracketWidth = (high - low) / high;
-      const double derivative = evaluateWaveFunction(pressure, left, gamma).derivative +
-                                evaluateWaveFunction(pressure, right, gamma).derivative;
-      if (!std::isfinite(derivative) || derivative <= 0.0) {
-        throw std::runtime_error("invalid Riemann pressure derivative");
-      }
-      double next = pressure - residual / derivative;
-      const bool smallNewtonStep = std::isfinite(next) && next > 0.0 &&
-          2.0 * std::abs(next - pressure) / (next + pressure) < options_.pressureRtol;
-      // Защита Ньютона: сохраняем положительность и ограничивающий интервал.
-      // Сошедшийся шаг может совпасть с концом интервала из-за округления.
-      if (!smallNewtonStep && (!std::isfinite(next) || next <= low || next >= high)) {
-        next = low + 0.5 * (high - low);
-      }
-      if (!(next > 0.0) || !std::isfinite(next)) {
-        throw std::runtime_error("invalid Riemann pressure step");
-      }
-      if (next == pressure && result.relativeResidual > options_.residualRtol) {
-        throw std::runtime_error("Riemann pressure search stalled with nonzero residual");
-      }
-      result.relativePressureChange = 2.0 * std::abs(next - pressure) / (next + pressure);
-      pressure = next;
-      if (result.relativePressureChange < options_.pressureRtol) {
-        result.relativeResidual = std::abs(residualAt(pressure)) / velocityScale;
-        result.exactPressureRoot = result.relativeResidual == 0.0;
-        converged = true;
-        break;
-      }
-    }
-    if (!converged) {
-      throw std::runtime_error("Riemann pressure did not converge within maxIterations");
+      break;
     }
   }
+  if (!converged) throw std::runtime_error("Newton method did not converge");
 
   const double fLeft = evaluateWaveFunction(pressure, left, gamma).value;
   const double fRight = evaluateWaveFunction(pressure, right, gamma).value;
-  const double uStar = 0.5 * left.velocity + 0.5 * right.velocity +
-                       0.5 * fRight - 0.5 * fLeft;
+  const double uStar =
+      0.5 * (left.velocity + right.velocity + fRight - fLeft);
   result.pStar = pressure;
   result.uStar = uStar;
   result.starLeft = {starDensity(left, pressure, gamma), uStar, pressure};
@@ -391,7 +332,7 @@ EulerPrimitiveState ExactEulerRiemannSolver::sample(const RiemannSolution& solut
 
   // Контакт движется со скоростью uStar. Сначала выбираем его сторону,
   // затем определяем положение луча относительно нелинейной волны.
-  if (S < solution.contactSpeed) {
+  if (S <= solution.contactSpeed) {
     if (solution.leftWave.type == RiemannWaveType::Shock) {
       return S < solution.leftWave.headSpeed ? solution.left
                                              : solution.starLeft;
@@ -407,8 +348,8 @@ EulerPrimitiveState ExactEulerRiemannSolver::sample(const RiemannSolution& solut
   }
 
   if (solution.rightWave.type == RiemannWaveType::Shock) {
-    return S >= solution.rightWave.headSpeed ? solution.right
-                                            : solution.starRight;
+    return S > solution.rightWave.headSpeed ? solution.right
+                                           : solution.starRight;
   }
 
   if (S >= solution.rightWave.headSpeed) {

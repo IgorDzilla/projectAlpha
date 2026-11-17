@@ -99,7 +99,7 @@ void checkPhysics(const ExactEulerRiemannSolver& solver, const RiemannSolution& 
   const auto right = solver.sample(r, (r.rightWave.tailSpeed + r.contactSpeed) / 2);
   near(l.pressure, right.pressure, "contact pressure continuity");
   near(l.velocity, right.velocity, "contact velocity continuity");
-  same(solver.sample(r, r.contactSpeed), r.starRight);
+  same(solver.sample(r, r.contactSpeed), r.starLeft);
 }
 
 void checkContactAndVacuum(double gamma) {
